@@ -6,11 +6,8 @@ GSCodec Studio is an open-source framework for Gaussian Splats Compression, incl
 
 ## Installation
 ### Repo. & Environment
+Please first clone the repository and cd to the root directory.
 ```bash
-# Clone the repo.
-git clone https://github.com/JasonLSC/GSCodec_Studio.git --recursive
-cd GSCodec_Studio
-
 # Make a conda environment
 conda create --name gscodec_studio python=3.10
 conda activate gscodec_studio
@@ -44,7 +41,7 @@ python datasets/download_dataset.py
 You can download the Tanks and Temples dataset and Deep Blending dataset used in original 3DGS via [this link](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip) and place these datasets under 'data' folder.
 ```bash
 # place other dataset, e.g Tanks and Temples dataset, under 'data' folder
-ln -s data/tandt /xxxx/Dataset/tandt
+ln -s /xxxx/Dataset/tandt data/tandt 
 ```
 
 We also use third-party library, 'python-fpnge', to accelerate image saving operations during the experiment for now. We also use third-party library, 'gridencoder', to facilitate hash encoding.
@@ -60,6 +57,27 @@ Before we start running scripts, we also need to install library for [vector qua
 # refer to https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install to see how to install TorchPQ
 pip install git+https://github.com/fraunhoferhhi/PLAS.git
 ```
+
+### Compress Tracked Gaussian Splats Sequences via Video Codec (Video-based Anchor)
+
+If you're interested in MPEG Gaussian Splats Coding, we have implemented a simple coding method for compressing temporally tracked Gaussian Splats using Video Codec as the core component. You can try this method using the script below.
+```bash
+cd examples
+bash benchmarks/mpeg/video_anchor_bench.sh
+```
+
+To compare with the Point Cloud Compression-based approach in MPEG Gaussian Splats Coding group, we have developed a simple wrapper based on their software. This allows us to evaluate both methods using the same evaluation protocol. You can try the Point Cloud Compression-based approach using the script below.
+```bash
+cd examples
+bash benchmarks/mpeg/pcc_anchor_bench.sh
+```
+
+***Running the above script will reproduce both our proposed approach from contribution m72063 and the baseline results that we used for comparison.***
+
+**Note**: 
+Before using the scripts mentioned above, please note the following:
+1. Please modify the input parameters ``--ply_dir``, ``--data_dir``, and ``--result_dir`` in the script to match your local paths.
+2. These experiments involve third-party programs, including point cloud codec and QMIV (quality evaluation software). If you need newer versions, you can compile them yourself and replace the current executables under ``examples/helper``.
 
 ### Static Gaussian Splats Training and Compression
 
@@ -96,25 +114,6 @@ Note: You need to modify the PLY file path in the scripts.
 cd examples
 bash benchmarks/load_ply_and_render.sh
 ```
-
-### Compress Tracked Gaussian Splats Sequences via Video Codec
-
-If you're interested in MPEG Gaussian Splats Coding, we have implemented a simple coding method for compressing temporally tracked Gaussian Splats using Video Codec as the core component. You can try this method using the script below.
-```bash
-cd examples
-bash benchmarks/mpeg/video_anchor_bench.sh
-```
-
-To compare with the Point Cloud Compression-based approach in MPEG Gaussian Splats Coding group, we have developed a simple wrapper based on their software. This allows us to evaluate both methods using the same evaluation protocol. You can try the Point Cloud Compression-based approach using the script below.
-```bash
-cd examples
-bash benchmarks/mpeg/pcc_anchor_bench.sh
-```
-
-**Note**: 
-Before using the scripts mentioned above, please note the following:
-1. Please modify the input parameters ``--ply_dir``, ``--data_dir``, and ``--result_dir`` in the script to match your local paths.
-2. These experiments involve third-party programs, including point cloud codec and QMIV (quality evaluation software). If you need newer versions, you can compile them yourself and replace the current executables under ``examples/helper``.
 
 ## Contributors
 
