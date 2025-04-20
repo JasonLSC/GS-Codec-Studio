@@ -3,6 +3,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field, InitVar
 import glob
+import time
 import shutil
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -98,7 +99,11 @@ class SeqHevcCompression:
                 "_decompress_video_hevc_16bit": _decompress_video_hevc_16bit,
                 "_decompress_video_hevc": _decompress_video_hevc,
                 "_decompress_quats_video_hevc": _decompress_quats_video_hevc,
-                "_decompress_shN_video_hevc": _decompress_shN_video_hevc
+                "_decompress_shN_video_hevc": _decompress_shN_video_hevc,
+                "_decompress_video_hevc_opencv": _decompress_video_hevc_opencv,
+                "_decompress_video_hevc_16bit_opencv": _decompress_video_hevc_16bit_opencv,
+                "_decompress_quats_video_hevc_opencv": _decompress_quats_video_hevc_opencv,
+                "_decompress_shN_video_hevc_opencv": _decompress_shN_video_hevc_opencv,
                 # "_decompress_masked_kmeans": _decompress_masked_kmeans,
             }
 
@@ -126,6 +131,28 @@ class SeqHevcCompression:
             return self.decompress_fn_map[param_name]
         else:
             return _decompress_npz
+    
+    def param_transform(self, splats_list: List[Dict]) -> List[Dict]:
+        """Transform the splats parameters to new domain
+        e.g.  
+        for SH coefficients, transform them from RGB domain to YCbCr domain
+        for quats:
+            1) normalize to unit quaternion
+            2) transform to Euler angles or other equivalent representations
+    
+        Args:                                                               +                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+            splats_list (List[Dict]): splats parameters of all frames
+        """
+        
+        return splats_list
+    
+    def param_inverse_transform(self, splats_list: List[Dict]) -> List[Dict]:
+        """Inverse transform the splats parameters to original domain
+        
+        Args:
+            splats_list (List[Dict]): splats parameters of all frames
+        """
+        return splats_list
     
     def compress(self, compress_dir: str) -> None:
         """Run compression
@@ -167,9 +194,31 @@ class SeqHevcCompression:
             meta = json.load(f)
 
         splats = {}
+        decoding_times = {}
+        # Record the start time of decompression
+        total_start_time = time.time()
+
         for param_name, param_meta in meta.items():
+            start_time = time.time()
+
             decompress_fn = self._get_decompress_fn(param_name)
             splats[param_name] = decompress_fn(compress_dir, param_name, param_meta)
+
+            decoding_time = time.time() - start_time
+            decoding_times[param_name] = decoding_time
+            if self.verbose:
+                print(f"Decoding time of {param_name} is: {decoding_time} s")
+        
+        # Record the end time of decompression
+        total_end_time = time.time()
+        total_decoding_time = total_end_time - total_start_time
+        print(f"Total decoding time is: {total_decoding_time} s")
+
+        decoding_stats_path = os.path.join(os.path.dirname(compress_dir), "stats", "decoding_times.json")
+        with open(decoding_stats_path, "w") as fp:
+            # Add total time to the decoding time dictionary
+            decoding_times["total"] = total_decoding_time
+            json.dump(decoding_times, fp, indent=4)
 
         # Param-specific postprocessing
         # splats["means"] = inverse_log_transform(splats["means"])
@@ -360,8 +409,13 @@ def _compress_video_hevc(
 
 def _decompress_video_hevc(compress_dir: str, param_name: str, meta: Dict[str, Any]):
     import imageio.v2 as imageio
-
+    import time
+    
     file_extension = meta["file_extension"]
+    
+    # Record the time when video reading starts
+    video_read_start = time.time()
+    
     reader = imageio.get_reader(os.path.join(compress_dir, f"{param_name}.{file_extension[1:]}"), format='FFMPEG')
 
     frames = []
@@ -372,12 +426,14 @@ def _decompress_video_hevc(compress_dir: str, param_name: str, meta: Dict[str, A
     if param_name == "opacities":
         video = video[..., 0]
     
-    # report the PSNR between reconstructed videos and original videos
-    raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
-    cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(255) - 10*np.log10(d)
-    print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
-    os.remove(os.path.join(compress_dir, f"{param_name}.npy"))
-
+    # Record the time when video reading ends
+    video_read_end = time.time()
+    video_read_time = video_read_end - video_read_start
+    print(f"Time to get {param_name} video: {video_read_time:.4f} seconds")
+    
+    # Record the time when video processing starts
+    process_start = time.time()
+    
     video_norm = video / (2**8 - 1)
 
     grid_norm = torch.tensor(video_norm)
@@ -387,6 +443,12 @@ def _decompress_video_hevc(compress_dir: str, param_name: str, meta: Dict[str, A
 
     params = grid.reshape(meta["shape"])
     params = params.to(dtype=getattr(torch, meta["dtype"]))
+    
+    # Record the time when video processing ends
+    process_end = time.time()
+    process_time = process_end - process_start
+    print(f"Time to convert {param_name} video to params: {process_time:.4f} seconds")
+    
     return params
 
 def _compress_video_hevc_16bit(
@@ -469,10 +531,10 @@ def _decompress_video_hevc_16bit(
     video = np.stack(frames, axis=0)
 
     # report the PSNR between reconstructed videos and original videos
-    raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
-    cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(65535) - 10*np.log10(d)
-    print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
-    os.remove(os.path.join(compress_dir, f"{param_name}.npy"))
+    # raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
+    # cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(65535) - 10*np.log10(d)
+    # print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
+    # os.remove(os.path.join(compress_dir, f"{param_name}.npy"))
 
     video_norm = video / (2**16 - 1)
 
@@ -560,10 +622,10 @@ def _decompress_quats_video_hevc(
     video = np.stack(frames, axis=0)
 
     # report the PSNR between reconstructed videos and original videos
-    raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
-    cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(255) - 10*np.log10(d)
-    print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
-    os.remove(os.path.join(compress_dir, f"{param_name}.npy"))   
+    # raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
+    # cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(255) - 10*np.log10(d)
+    # print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
+    # os.remove(os.path.join(compress_dir, f"{param_name}.npy"))   
 
     video_norm = video / (2**8 - 1)
     grid_norm = torch.tensor(video_norm)
@@ -688,4 +750,311 @@ def _decompress_npz(compress_dir: str, param_name: str, meta: Dict[str, Any]) ->
     params = torch.tensor(arr)
     params = params.reshape(meta["shape"])
     params = params.to(dtype=getattr(torch, meta["dtype"]))
+    return params
+
+def decode_video_opencv(video_path: str, param_name: str) -> np.ndarray:
+    """Decode video using OpenCV and handle color channels based on parameter name."""
+
+    import cv2 # Import OpenCV here to make the dependency optional unless these functions are used
+    # Record the time when video reading starts
+    video_read_start = time.time()
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Cannot open video file: {video_path}")
+
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Key: If not a grayscale parameter (opacities), convert BGR to RGB.
+        if param_name != "opacities" and frame.shape[-1] == 3:
+             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        elif param_name == "opacities" and frame.shape[-1] == 3: # Grayscale but read as 3 channels.
+             frame = frame[..., 0] # Take only one channel.
+        # If already single-channel grayscale, no processing needed.
+
+        frames.append(frame)
+
+    cap.release()
+
+    if not frames:
+        raise ValueError(f"No frames read from video: {video_path}")
+
+    video = np.stack(frames, axis=0)
+
+    # If opacities is single-channel, remove the last dimension.
+    if param_name == "opacities" and video.ndim > 3 and video.shape[-1] == 1:
+         video = video.squeeze(-1)
+
+    # Record the time when video reading ends
+    video_read_end = time.time()
+    video_read_time = video_read_end - video_read_start
+    print(f"Time to get {param_name} video (OpenCV, RGB corrected): {video_read_time:.4f} seconds")
+
+    return video
+
+def _decompress_video_hevc_opencv(compress_dir: str, param_name: str, meta: Dict[str, Any]):
+    """Decompress HEVC video using OpenCV (alternative to imageio version).
+
+    Note: Requires opencv-python (pip install opencv-python).
+    """
+
+    file_extension = meta["file_extension"]
+    video_path = os.path.join(compress_dir, f"{param_name}.{file_extension[1:]}")
+
+    # Decode video using OpenCV (includes RGB correction)
+    video = decode_video_opencv(video_path, param_name)
+
+    # Record the time when video processing starts
+    process_start = time.time()
+
+    video_norm = video / (2**8 - 1)
+
+    grid_norm = torch.tensor(video_norm, dtype=torch.float32) # Ensure correct dtype.
+    mins = torch.tensor(meta["mins"], dtype=torch.float32)
+    maxs = torch.tensor(meta["maxs"], dtype=torch.float32)
+
+    # Handle potential dimension mismatch for mins and maxs (e.g., grayscale).
+    if grid_norm.dim() == 3 and mins.dim() == 1 and grid_norm.shape[-1] != mins.shape[0]:
+        # Assuming grayscale case, mins/maxs have only one value.
+        mins = mins.view(1)
+        maxs = maxs.view(1)
+    elif grid_norm.dim() == 4 and mins.dim() == 1 and grid_norm.shape[-1] == mins.shape[0]:
+         # Normal multi-channel case, adjust mins/maxs shape for broadcasting.
+        mins = mins.view(1, 1, 1, -1)
+        maxs = maxs.view(1, 1, 1, -1)
+    elif grid_norm.dim() == 3 and mins.dim() == 0: # Grayscale and mins/maxs are scalars.
+        pass # No need to adjust shape.
+    elif grid_norm.dim() == 4 and mins.dim() == 0: # Multi-channel and mins/maxs are scalars? (Unlikely, but handle it).
+         pass # No need to adjust shape.
+
+    grid = grid_norm * (maxs - mins) + mins
+
+    # Ensure the shape after reshape matches meta['shape'].
+    target_shape = meta["shape"]
+    try:
+        params = grid.reshape(target_shape)
+    except RuntimeError as e:
+         print(f"Warning: Shape mismatch during reshape. Grid shape: {grid.shape}, Target shape: {target_shape}. Error: {e}")
+         # Try a more compatible reshape (T, H, W, C) -> (T, N, C) or (T, H, W) -> (T, N).
+         if len(target_shape) == 3 and grid.dim() == 4: # T, N, C vs T, H, W, C
+             params = grid.reshape(target_shape[0], -1, target_shape[2])
+         elif len(target_shape) == 2 and grid.dim() == 3: # T, N vs T, H, W
+             params = grid.reshape(target_shape[0], -1)
+         else: # Cannot match, keep grid shape or raise error.
+             print("Error: Cannot automatically reconcile shapes.")
+             raise e # Or return grid.
+
+    params = params.to(dtype=getattr(torch, meta["dtype"]))
+
+    # Record the time when video processing ends
+    process_end = time.time()
+    process_time = process_end - process_start
+    print(f"Time to convert {param_name} video to params (OpenCV): {process_time:.4f} seconds")
+
+    return params
+
+def _decompress_video_hevc_16bit_opencv(
+        compress_dir: str, param_name: str, meta: Dict[str, Any]
+) -> Tensor:
+    """Decompress 16-bit HEVC video using OpenCV by combining two 8-bit streams.
+
+    Note: Requires opencv-python. Reads '_l' and '_u' streams.
+    """
+    file_extension = meta["file_extension"]
+    video_path_l = os.path.join(compress_dir, f"{param_name}_l.{file_extension[1:]}")
+    video_path_u = os.path.join(compress_dir, f"{param_name}_u.{file_extension[1:]}")
+
+    # Decode LSB and MSB videos using OpenCV helper
+    video_l = decode_video_opencv(video_path_l, f"{param_name}_l") # Pass param_name hint
+    video_u = decode_video_opencv(video_path_u, f"{param_name}_u") # Pass param_name hint
+
+    # Ensure videos have the same length
+    if len(video_l) != len(video_u):
+        raise ValueError(f"Length mismatch between {param_name}_l ({len(video_l)}) and {param_name}_u ({len(video_u)}) videos.")
+
+    # Reconstruct 16-bit video
+    video_u_16 = video_u.astype(np.uint16)
+    video = (video_u_16 << 8) | video_l.astype(np.uint16) # Combine LSB and MSB
+
+    # --- Rest of the processing is similar to the imageio version ---
+    process_start = time.time()
+
+    video_norm = video / (2**16 - 1)
+
+    grid_norm = torch.tensor(video_norm, dtype=torch.float32)
+    mins = torch.tensor(meta["mins"], dtype=torch.float32)
+    maxs = torch.tensor(meta["maxs"], dtype=torch.float32)
+
+    # Adjust mins/maxs shape for broadcasting
+    if grid_norm.dim() == 4 and mins.dim() == 1:
+        mins = mins.view(1, 1, 1, -1)
+        maxs = maxs.view(1, 1, 1, -1)
+    elif grid_norm.dim() == 3 and mins.dim() == 0: # scalar mins/maxs
+         pass
+
+    grid = grid_norm * (maxs - mins) + mins
+
+    target_shape = meta["shape"]
+    try:
+        params = grid.reshape(target_shape)
+    except RuntimeError as e:
+        print(f"Warning: Shape mismatch during reshape. Grid shape: {grid.shape}, Target shape: {target_shape}. Error: {e}")
+        # Fallback reshape logic (same as before)
+        if len(target_shape) == 3 and grid.dim() == 4:
+            params = grid.reshape(target_shape[0], -1, target_shape[2])
+        elif len(target_shape) == 2 and grid.dim() == 3:
+            params = grid.reshape(target_shape[0], -1)
+        else:
+            print("Error: Cannot automatically reconcile shapes.")
+            raise e
+
+    params = params.to(dtype=getattr(torch, meta["dtype"]))
+
+    process_end = time.time()
+    process_time = process_end - process_start
+    print(f"Time to convert {param_name} 16bit video to params (OpenCV): {process_time:.4f} seconds")
+
+    return params
+
+def _decompress_quats_video_hevc_opencv(
+        compress_dir: str, param_name: str, meta: Dict[str, Any]
+) -> Tensor:
+    """Decompress quaternion HEVC video using OpenCV.
+
+    Note: Requires opencv-python. Reads '_w' (grayscale) and '_xyz' (color) streams.
+    """
+    file_extension = meta["file_extension"]
+    video_path_w = os.path.join(compress_dir, f"{param_name}_w.{file_extension[1:]}")
+    video_path_xyz = os.path.join(compress_dir, f"{param_name}_xyz.{file_extension[1:]}")
+
+    # Decode videos using OpenCV helper
+    video_w = decode_video_opencv(video_path_w, "opacities") # Hint as grayscale
+    video_xyz = decode_video_opencv(video_path_xyz, f"{param_name}_xyz") # Hint as color
+
+    # Ensure videos have the same length
+    if len(video_w) != len(video_xyz):
+        raise ValueError(f"Length mismatch between {param_name}_w ({len(video_w)}) and {param_name}_xyz ({len(video_xyz)}) videos.")
+
+    # Combine w and xyz components
+    if video_w.ndim == 3: # T, H, W
+        video_w = video_w[..., np.newaxis] # Add channel dim
+
+    video = np.concatenate([video_w, video_xyz], axis=-1)
+
+    # --- Rest of the processing is similar to the imageio version ---
+    process_start = time.time()
+
+    video_norm = video / (2**8 - 1)
+
+    grid_norm = torch.tensor(video_norm, dtype=torch.float32)
+    mins = torch.tensor(meta["mins"], dtype=torch.float32)
+    maxs = torch.tensor(meta["maxs"], dtype=torch.float32)
+
+    # Adjust mins/maxs shape for broadcasting
+    if grid_norm.dim() == 4 and mins.dim() == 1:
+         mins = mins.view(1, 1, 1, -1)
+         maxs = maxs.view(1, 1, 1, -1)
+    elif grid_norm.dim() == 4 and mins.dim() == 0: # scalar mins/maxs
+        pass
+
+    grid = grid_norm * (maxs - mins) + mins
+
+    target_shape = meta["shape"]
+    try:
+        params = grid.reshape(target_shape)
+    except RuntimeError as e:
+        print(f"Warning: Shape mismatch during reshape. Grid shape: {grid.shape}, Target shape: {target_shape}. Error: {e}")
+        # Fallback reshape logic
+        if len(target_shape) == 3 and grid.dim() == 4:
+            params = grid.reshape(target_shape[0], -1, target_shape[2])
+        elif len(target_shape) == 2 and grid.dim() == 3:
+             params = grid.reshape(target_shape[0], -1)
+        else:
+            print("Error: Cannot automatically reconcile shapes.")
+            raise e
+
+    params = params.to(dtype=getattr(torch, meta["dtype"]))
+
+    process_end = time.time()
+    process_time = process_end - process_start
+    print(f"Time to convert {param_name} video to params (OpenCV): {process_time:.4f} seconds")
+
+    return params
+
+def _decompress_shN_video_hevc_opencv(
+        compress_dir: str, param_name: str, meta: Dict[str, Any]
+) -> Tensor:
+    """Decompress SH coefficient HEVC videos using OpenCV.
+
+    Note: Requires opencv-python. Reads multiple streams named like 'shN_sh1_-1'.
+    """
+    shN_name_list = []
+    for degree in range(1, 4):
+        for level in range(-degree, degree + 1):
+            shN_name_list.append(f"sh{degree}_{level}")
+
+    file_extension = meta["file_extension"]
+
+    shN_video_list = []
+    process_start_all_decodes = time.time()
+    for shN_name in shN_name_list:
+        video_path = os.path.join(compress_dir, f"{param_name}_{shN_name}.{file_extension[1:]}")
+        # Decode each SH component video using OpenCV helper
+        shN_video = decode_video_opencv(video_path, f"{param_name}_{shN_name}")
+        shN_video_list.append(shN_video)
+    process_end_all_decodes = time.time()
+    print(f"Time to decode all {len(shN_name_list)} SH videos (OpenCV): {process_end_all_decodes - process_start_all_decodes:.4f} seconds")
+
+
+    # Check consistency and Stack videos along the SH dimension (axis=3)
+    if not shN_video_list:
+        raise ValueError("No SH videos decoded.")
+    first_video_shape = shN_video_list[0].shape
+    for i, vid in enumerate(shN_video_list[1:], 1):
+        if vid.shape[0] != first_video_shape[0]: # Check frame count
+             raise ValueError(f"Frame count mismatch in SH videos: {shN_name_list[0]} ({first_video_shape[0]}) vs {shN_name_list[i]} ({vid.shape[0]}) ")
+
+    shN_videos = np.stack(shN_video_list, axis=3) # [T, H, W, N_sh, C]
+
+    # --- Rest of the processing is similar to the imageio version ---
+    process_start_conversion = time.time()
+
+    shN_norm = shN_videos / (2**8 - 1)
+
+    grid_norm = torch.tensor(shN_norm, dtype=torch.float32)
+    mins = torch.tensor(meta["mins"], dtype=torch.float32) # Shape [N_sh, C]
+    maxs = torch.tensor(meta["maxs"], dtype=torch.float32) # Shape [N_sh, C]
+
+    # Adjust mins/maxs shape for broadcasting: [N_sh, C] -> [1, 1, 1, N_sh, C]
+    if grid_norm.dim() == 5 and mins.dim() == 2:
+         mins = mins.view(1, 1, 1, mins.shape[0], mins.shape[1])
+         maxs = maxs.view(1, 1, 1, maxs.shape[0], maxs.shape[1])
+    elif grid_norm.dim()==5 and mins.dim() == 0: # scalar mins/maxs
+        pass
+
+    grid = grid_norm * (maxs - mins) + mins # [T, H, W, N_sh, C]
+
+    target_shape = meta["shape"] # Expected: [T, N, N_sh, C] where N = H*W
+    try:
+        # Reshape [T, H, W, N_sh, C] -> [T, H*W, N_sh, C]
+        params = grid.reshape(target_shape[0], -1, target_shape[2], target_shape[3])
+        # Verify shape matches exactly
+        if list(params.shape) != target_shape:
+             print(f"Warning: Reshaped shape {list(params.shape)} doesn't exactly match target {target_shape}. Final reshape might be needed.")
+             params = params.reshape(target_shape) # Force final reshape
+
+    except RuntimeError as e:
+        print(f"Error: Shape mismatch during reshape. Grid shape: {grid.shape}, Target shape: {target_shape}. Error: {e}")
+        raise e
+
+    params = params.to(dtype=getattr(torch, meta["dtype"]))
+
+    process_end_conversion = time.time()
+    process_time = process_end_conversion - process_start_conversion
+    print(f"Time to convert {param_name} video to params (OpenCV): {process_time:.4f} seconds")
+
     return params
