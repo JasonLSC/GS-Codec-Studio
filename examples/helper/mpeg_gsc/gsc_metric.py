@@ -4,6 +4,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
+from PIL import Image
+import torch
+import torchvision.transforms as transforms
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+
 def run_QMIV_metric(render_YUV_filename: Path, ref_YUV_filename: Path, 
                     render_start_frame: int = 0, ref_start_frame: int = 0,
                     saved_log_file: Optional[Path] = None, 
@@ -99,6 +104,153 @@ def run_QMIV_metric(render_YUV_filename: Path, ref_YUV_filename: Path,
     }
 
     return ret_dict
+
+def run_QMIV_metric_for_pngs(
+    render_png_filename: Path, 
+    ref_png_filename: Path, 
+    render_start_frame: int = 0, 
+    ref_start_frame: int = 0,
+    saved_log_file: Optional[Path] = None, 
+    resolution: str = "2048x1088",
+    pix_fmt: str = "yuv420p10le",
+    frame_num: int = 16
+):
+    """
+    Compute QMIV quality metrics for PNG image sequences in both RGB and YUV domains.
+
+    This function runs the QMIV tool twice:
+    1. In the RGB domain to compute RGB-based PSNR.
+    2. In the YUV domain (with BT.601 color space) to compute YUV-based PSNR, SSIM, and IVSSIM.
+
+    Args:
+        render_png_filename (Path): Path pattern to the rendered PNG sequence to be evaluated.
+        ref_png_filename (Path): Path pattern to the reference PNG sequence.
+        render_start_frame (int, optional): Start frame index for the rendered sequence. Default is 0.
+        ref_start_frame (int, optional): Start frame index for the reference sequence. Default is 0.
+        saved_log_file (Optional[Path], optional): Path to save the QMIV log file. If None, uses the stem of the render file. Default is None.
+        resolution (str, optional): Resolution of the input images, e.g., "1920x1080". Default is "2048x1088".
+        pix_fmt (str, optional): Pixel format (not used for PNG). Default is "yuv420p10le".
+        frame_num (int, optional): Number of frames to process. Default is 16.
+
+    Returns:
+        dict: Dictionary with the following keys:
+            - "RGB_PSNR": PSNR value in the RGB domain (float)
+            - "YUV_PSNR": PSNR value in the YUV domain (float)
+            - "YUV_SSIM": SSIM value in the YUV domain (float)
+            - "YUV_IVSSIM": IVSSIM value in the YUV domain (float)
+
+    Notes:
+        - Requires the QMIV executable to be available in the specified directory.
+        - The function will overwrite the log file if it already exists.
+        - The function expects PNG sequences with consistent naming and frame count.
+    """
+        
+    if saved_log_file is None:
+        saved_log_file = render_png_filename.stem + ".txt"
+
+    if os.path.exists(saved_log_file):
+        os.remove(saved_log_file)
+    
+    # RGB domain
+    QMIV_cmd = [
+        "./helper/mpeg_gsc/QMIV",
+        "-i0", render_png_filename,
+        "-i1", ref_png_filename,
+        "-ff", "PNG",
+        "-ps", resolution,
+        "-csi", "RGB", "-csm", "RGB", "-cwa", "1:1:1:0", "-cws", "1:1:1:0",
+        "-ml", "PSNR",
+        "-nth", "16", "-v", "2",
+        "-r", saved_log_file
+    ]
+
+    result = subprocess.run(QMIV_cmd, capture_output=True, text=True)
+    print(result.stderr)
+    # YCbCr domain
+    QMIV_cmd = [
+        "./helper/mpeg_gsc/QMIV",
+        "-i0", render_png_filename,
+        "-i1", ref_png_filename,
+        "-ff", "PNG",
+        "-ps", resolution,
+        "-csi", "RGB", "-csm", "YCbCr_BT601",
+        "-ml", "PSNR, SSIM, IVSSIM",
+        "-nth", "16", "-v", "2",
+        "-r", saved_log_file
+    ]
+
+    result = subprocess.run(QMIV_cmd, capture_output=True, text=True)
+    print(result.stderr)
+
+    with open(saved_log_file, 'r') as f:
+        content = f.read()
+
+    yuv_psnr = float(re.search(r'PSNR\s+-YCbCr\s+(\d+\.\d+)', content).group(1))
+    yuv_ssim = float(re.search(r'SSIM\s+-YCbCr\s+(\d+\.\d+)', content).group(1))
+    yuv_ivssim = float(re.search(r'IVSSIM\s+(\d+\.\d+)', content).group(1))
+    rgb_psnr = float(re.search(r'PSNR\s+-RGB\s+(\d+\.\d+)', content).group(1))
+
+    ret_dict = {
+        "RGB_PSNR": rgb_psnr,
+        "YUV_PSNR": yuv_psnr,
+        "YUV_SSIM": yuv_ssim,
+        "YUV_IVSSIM": yuv_ivssim,
+    }
+
+    return ret_dict
+
+def run_LPIPS_for_pngs(
+    render_png_filename: Path, 
+    ref_png_filename: Path, 
+    lpips_calculator: LearnedPerceptualImagePatchSimilarity,
+):
+    # collect png files and convert to tensor
+    render_tensors = load_image_sequence_to_tensors(render_png_filename)
+    ref_tensors = load_image_sequence_to_tensors(ref_png_filename)
+
+    # calculate lpips
+    chunk_size = 2
+    lpips_values_list = []
+    for i in range(0, render_tensors.shape[0], chunk_size):
+        lpips_values = lpips_calculator(render_tensors[i:i+chunk_size].to(lpips_calculator.device), 
+                                        ref_tensors[i:i+chunk_size].to(lpips_calculator.device))
+        lpips_values_list.append(lpips_values)
+    lpips_values = torch.stack(lpips_values_list, dim=0).mean()
+
+    ret_dict = {
+        "LPIPS": lpips_values.item(),
+    }
+
+    return ret_dict
+
+def format_to_glob_pattern(format_str):
+    return re.sub(r'\{:0\d+d\}', '*', format_str)
+
+def load_image_sequence_to_tensors(file_pattern: str):
+    """
+    Load image sequence and convert to tensor sequence
+    
+    Args:
+        file_pattern: Complete file path pattern, e.g. "results/mpeg151/video_anchor/bartender/rp0/renders/val_frame{:03d}_testv000.png"
+    
+    Returns:
+        torch.Tensor: A tensor in (N,C,H,W) format, with values normalized to [0,1]
+    """
+    # Convert to Path object and get matching files
+    path = Path(file_pattern).parent  # Get parent directory
+    glob_pattern = format_to_glob_pattern(Path(file_pattern).name)  # Convert only the filename part to glob pattern
+    files = sorted(path.glob(glob_pattern))
+    
+    # Define preprocessing transform
+    transform = transforms.Compose([
+        transforms.ToTensor(),  # Convert PIL image to tensor and normalize to [0,1]
+    ])
+    
+    # Load images and convert to tensors
+    tensors = [transform(Image.open(file)) for file in files]
+    
+    # Stack tensors along a new dimension
+    return torch.stack(tensors, dim=0)  # (N,3,H,W)
 
 def convert_mp4_to_yuv(input_mp4: Path) -> Tuple[bool, Path]:
     """

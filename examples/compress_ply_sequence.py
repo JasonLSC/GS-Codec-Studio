@@ -14,10 +14,11 @@ import nerfview
 import numpy as np
 import torch
 import torch.nn.functional as F
-import tqdm
+from tqdm import tqdm
 import tyro
 import viser
 import yaml
+import fpnge
 from datasets.colmap import Dataset, GSCDataset, Parser
 from datasets.traj import (
     generate_interpolated_path,
@@ -376,7 +377,7 @@ class Runner:
         self.ply_filename_list = sorted(glob.glob(os.path.join(ply_dir, "*.ply")))
 
         splats_list = []
-        for filename in tqdm.tqdm(self.ply_filename_list[:frame_num], desc="Loading .ply file"):
+        for filename in tqdm(self.ply_filename_list[:frame_num], desc="Loading .ply file"):
             splats = load_ply(filename)
             splats_list.append(splats.to("cuda"))
         
@@ -390,7 +391,7 @@ class Runner:
 
         trainset_list = []
         valset_list = []
-        for folder in tqdm.tqdm(folders[:frame_num], desc="Loading colmap results"):
+        for folder in tqdm(folders[:frame_num], desc="Loading colmap results"):
             parser = Parser(
                 data_dir=folder,
                 factor=cfg.data_factor,
@@ -572,7 +573,7 @@ class Runner:
         return render_colors, render_alphas, info
     
     @torch.no_grad()
-    def eval(self, stage: str = "val"):
+    def eval(self, stage: str = "val", splats_list: Optional[List[Dict]] = None):
         """Entry for evaluation."""
         print("Running evaluation...")
         cfg = self.cfg
@@ -582,8 +583,23 @@ class Runner:
 
         # dict to save metrics of each frame
         seq_stats = defaultdict(dict) 
+
+        # if splats_list is not provided, use the default splats_list
+        if splats_list is None:
+            splats_list_to_render = self.splats_list
+        else:
+            splats_list_to_render = splats_list
+            if not isinstance(splats_list_to_render[0], torch.nn.ParameterDict):
+                splats_list_to_render = [
+                    torch.nn.ParameterDict({
+                        k: torch.nn.Parameter(v) if isinstance(v, torch.Tensor) else v 
+                        for k, v in splats.items()
+                    }) 
+                    for splats in splats_list_to_render
+                ]
+
         # loop on frame
-        for f_id, (splats, val_dataset, train_dataset) in enumerate(zip(self.splats_list, self.valset_list, self.trainset_list)):
+        for f_id, (splats, val_dataset, train_dataset) in enumerate(zip(splats_list_to_render, self.valset_list, self.trainset_list)):
             valloader = torch.utils.data.DataLoader(
                 val_dataset, batch_size=1, shuffle=False, num_workers=1
             )
@@ -622,10 +638,17 @@ class Runner:
                     # canvas = torch.cat(canvas_list, dim=2).squeeze(0).cpu().numpy() # side by side
                     canvas = canvas_list[1].squeeze(0).cpu().numpy() # signle image
                     canvas = (canvas * 255).astype(np.uint8)
-                    imageio.imwrite(
-                        f"{self.render_dir}/{stage}_frame{f_id:03d}_testv{v_id:03d}.png",
-                        canvas,
-                    )
+
+                    # save img with imageio (relatively slow)
+                    # imageio.imwrite(
+                    #     f"{self.render_dir}/{stage}_frame{f_id:03d}_testv{v_id:03d}.png",
+                    #     canvas,
+                    # )
+
+                    # save img with fpnge (relatively fast)
+                    png = fpnge.fromNP(canvas) # fpnge needs tensor in order as [H,W,C]
+                    with open(f"{self.render_dir}/{stage}_frame{f_id:03d}_testv{v_id:03d}.png", "wb") as f:
+                        f.write(png)
 
                     pixels_p = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     colors_p = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
@@ -673,38 +696,76 @@ class Runner:
         with open(f"{self.stats_dir}/{stage}.json", "w") as f:
             json.dump(seq_stats, f, indent=4)        
 
-    def eval_with_gsc_ctc_metrics(self, ):
-        from helper.mpeg_gsc.gsc_metric import run_QMIV_metric
+        return seq_stats
+
+    def eval_pngs_with_gsc_ctc_metrics(self, ):
+        from helper.mpeg_gsc.gsc_metric import run_QMIV_metric_for_pngs, run_LPIPS_for_pngs
         from pathlib import Path
         height, width = self.valset_list[0][0]["image"].shape[0:2]
         resolution = f"{width}x{height}"
 
-        # path to save QMIV log
-        # if os.path.exists(f"{self.cfg.result_dir}/log"):
-        #     shutil.rmtree(f"{self.cfg.result_dir}/log")
         os.makedirs(f"{self.cfg.result_dir}/log", exist_ok=True)
 
         gsc_metrics_across_test_views = defaultdict(dict)
-        for test_view_id in range(len(self.cfg.test_view_id)):
-            render_YUV_filename = Path(f"{self.cfg.result_dir}/renders/compress_testv{test_view_id:03d}.yuv")
-            ref_YUV_filename = Path(f"{self.cfg.result_dir}/renders/val_testv{test_view_id:03d}.yuv")
+        for test_view_id in tqdm(range(len(self.cfg.test_view_id)), desc="Using QMIV to calculate quality metrics"):
+
+            render_png_filename = Path(f"{self.cfg.result_dir}/renders/compress_frame{{:03d}}_testv{test_view_id:03d}.png")
+            ref_png_filename = Path(f"{self.cfg.result_dir}/renders/val_frame{{:03d}}_testv{test_view_id:03d}.png")
             saved_log_file = Path(f"{self.cfg.result_dir}/log/QMIV_testv{test_view_id:03d}.txt")
 
-            gsc_metrics = run_QMIV_metric(render_YUV_filename,
-                                          ref_YUV_filename,
-                                          resolution=resolution,
-                                          saved_log_file=saved_log_file,
-                                          pix_fmt="yuv420p")
+            gsc_metrics = run_QMIV_metric_for_pngs(render_png_filename,
+                                                ref_png_filename,
+                                                resolution=resolution,
+                                                saved_log_file=saved_log_file)
+            lpips_dict = run_LPIPS_for_pngs(render_png_filename,
+                                        ref_png_filename,
+                                        lpips_calculator=self.lpips)
+            gsc_metrics.update(lpips_dict)
             gsc_metrics_across_test_views[f"testv{test_view_id:03d}"] = gsc_metrics
-        
+
         metric_names = gsc_metrics_across_test_views[f"testv{0:03d}"].keys()
         for metric in metric_names:
             total = sum(gsc_metrics_across_test_views[f"testv{i:03d}"][metric] 
                     for i in range(len(self.cfg.test_view_id)))
             gsc_metrics_across_test_views["average"][metric] = total / len(self.cfg.test_view_id)
         
+        # save quality metrics from each views and average metrics
         with open(os.path.join(self.cfg.result_dir, "stats", "gsc_metrics.json"), "w") as fp:
             json.dump(gsc_metrics_across_test_views, fp, indent=4)
+
+    # deprecated
+    # def eval_with_gsc_ctc_metrics(self, ):
+    #     from helper.mpeg_gsc.gsc_metric import run_QMIV_metric
+    #     from pathlib import Path
+    #     height, width = self.valset_list[0][0]["image"].shape[0:2]
+    #     resolution = f"{width}x{height}"
+
+    #     # path to save QMIV log
+    #     # if os.path.exists(f"{self.cfg.result_dir}/log"):
+    #     #     shutil.rmtree(f"{self.cfg.result_dir}/log")
+    #     os.makedirs(f"{self.cfg.result_dir}/log", exist_ok=True)
+
+    #     gsc_metrics_across_test_views = defaultdict(dict)
+    #     for test_view_id in range(len(self.cfg.test_view_id)):
+    #         render_YUV_filename = Path(f"{self.cfg.result_dir}/renders/compress_testv{test_view_id:03d}.yuv")
+    #         ref_YUV_filename = Path(f"{self.cfg.result_dir}/renders/val_testv{test_view_id:03d}.yuv")
+    #         saved_log_file = Path(f"{self.cfg.result_dir}/log/QMIV_testv{test_view_id:03d}.txt")
+
+    #         gsc_metrics = run_QMIV_metric(render_YUV_filename,
+    #                                       ref_YUV_filename,
+    #                                       resolution=resolution,
+    #                                       saved_log_file=saved_log_file,
+    #                                       pix_fmt="yuv420p")
+    #         gsc_metrics_across_test_views[f"testv{test_view_id:03d}"] = gsc_metrics
+        
+    #     metric_names = gsc_metrics_across_test_views[f"testv{0:03d}"].keys()
+    #     for metric in metric_names:
+    #         total = sum(gsc_metrics_across_test_views[f"testv{i:03d}"][metric] 
+    #                 for i in range(len(self.cfg.test_view_id)))
+    #         gsc_metrics_across_test_views["average"][metric] = total / len(self.cfg.test_view_id)
+        
+    #     with open(os.path.join(self.cfg.result_dir, "stats", "gsc_metrics.json"), "w") as fp:
+    #         json.dump(gsc_metrics_across_test_views, fp, indent=4)
 
     def summary(self,):
         import pandas as pd
@@ -719,7 +780,7 @@ class Runner:
             else:
                 return f"{size_bytes/(1024**3):.2f} GB"
             
-        # rate summary
+        ### rate summary
         directory_path = os.path.join(self.cfg.result_dir, "compression")
         
         # Check if directory exists
@@ -740,8 +801,8 @@ class Runner:
                 total_size += size
 
         # Get bitrate
-        Byte_to_Mbps = lambda filesize, n_frame: filesize / (1024 ** 2) / n_frame * 8 * 30
-        bitrate = Byte_to_Mbps(total_size, self.frame_num)
+        Byte_to_Kbps = lambda filesize, n_frame: filesize / 1024 / n_frame * 8 * 30
+        bitrate = Byte_to_Kbps(total_size, self.frame_num)
 
         # Calculate percentage
         percentages = {name: (size / total_size) * 100 for name, size in file_sizes.items()}
@@ -759,13 +820,20 @@ class Runner:
         df.to_csv(csv_path, index=False)
         print(f"CSV file saved to: {csv_path}")
 
-        # distortion summary
+        ### distortion summary
+        # compressed vs GT
         with open(os.path.join(self.cfg.result_dir, "stats", "compress.json"), "r") as fp:
             quality_metrics = json.load(fp)
             avg_quality_metrics = quality_metrics["average"]
         
+        # compressed vs val (before compression vs after compression)
+        with open(os.path.join(self.cfg.result_dir, "stats", "gsc_metrics.json"), "r") as fp:
+            gsc_metrics = json.load(fp)
+            avg_gsc_metrics = gsc_metrics["average"]
+        
         # save summary into a json file
-        rd_summary = {key: value for key, value in avg_quality_metrics.items() if key != "ellipse_time"}
+        rd_summary = {"quality_vs_GT":{key: value for key, value in avg_quality_metrics.items() if key != "ellipse_time"}}
+        rd_summary["quality_vs_val"] = {key: value for key, value in avg_gsc_metrics.items()}
         rd_summary["bitrate"] = bitrate
         with open(os.path.join(self.cfg.result_dir, "summary.json"), "w") as fp:
             json.dump(rd_summary, fp, indent=4)
@@ -787,14 +855,14 @@ class Runner:
                 os.system(cmd)
                 print(f"Video created for {stage}, test view {test_view_id}")
 
-                # png sequence to yuv for MPEG GSC metrics
-                cmd = (f'ffmpeg -framerate 30 -i "{self.cfg.result_dir}/renders/{stage}_frame%03d_testv{test_view_id:03d}.png" '
-                    f'-c:v rawvideo -pix_fmt yuv420p '
-                    f'"{self.cfg.result_dir}/renders/{stage}_testv{test_view_id:03d}.yuv"')
+                # png sequence to yuv for MPEG GSC metrics (not used for now)
+                # cmd = (f'ffmpeg -framerate 30 -i "{self.cfg.result_dir}/renders/{stage}_frame%03d_testv{test_view_id:03d}.png" '
+                #     f'-c:v rawvideo -pix_fmt yuv420p '
+                #     f'"{self.cfg.result_dir}/renders/{stage}_testv{test_view_id:03d}.yuv"')
                 
-                print(f"Running: {cmd}")
-                os.system(cmd)
-                print(f"YUV Video created for {stage}, test view {test_view_id}")
+                # print(f"Running: {cmd}")
+                # os.system(cmd)
+                # print(f"YUV Video created for {stage}, test view {test_view_id}")
 
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     runner = Runner(local_rank, world_rank, world_size, cfg)
@@ -808,7 +876,8 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
         raise NotImplementedError(f"{cfg.anchor_type} Anchor has not been implemented.")
     
     runner.stack_render_img_to_vid()
-    runner.eval_with_gsc_ctc_metrics()
+    runner.eval_pngs_with_gsc_ctc_metrics()
+    # runner.eval_with_gsc_ctc_metrics()
     runner.summary()
 
 if __name__ == "__main__":
@@ -870,14 +939,14 @@ if __name__ == "__main__":
                 compression_cfg=VideoCompressionConfig(
                     qp={
                         "means": -1,
-                        "opacities": 4,
-                        "quats": 4,
-                        "scales": 4,
-                        "sh0": 4,
+                        "opacities": 22,
+                        "quats": 28,
+                        "scales": 28,
+                        "sh0": 22,
                         "shN": {
-                            "sh1": 4,
-                            "sh2": 4,
-                            "sh3": 4
+                            "sh1": 34,
+                            "sh2": 40,
+                            "sh3": 46
                         }
                     }
                 )
@@ -890,14 +959,14 @@ if __name__ == "__main__":
                 compression_cfg=VideoCompressionConfig(
                     qp={
                         "means": -1,
-                        "opacities": 4,
-                        "quats": 10,
-                        "scales": 10,
-                        "sh0": 4,
+                        "opacities": 16,
+                        "quats": 22,
+                        "scales": 22,
+                        "sh0": 16,
                         "shN": {
-                            "sh1": 16,
-                            "sh2": 22,
-                            "sh3": 28
+                            "sh1": 28,
+                            "sh2": 34,
+                            "sh3": 40
                         }
                     }
                 )
@@ -930,14 +999,34 @@ if __name__ == "__main__":
                 compression_cfg=VideoCompressionConfig(
                     qp={
                         "means": -1,
-                        "opacities": 16,
-                        "quats": 22,
-                        "scales": 22,
-                        "sh0": 16,
+                        "opacities": 4,
+                        "quats": 10,
+                        "scales": 10,
+                        "sh0": 4,
                         "shN": {
-                            "sh1": 28,
-                            "sh2": 34,
-                            "sh3": 40
+                            "sh1": 16,
+                            "sh2": 22,
+                            "sh3": 28
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_rp4": (
+            "Use HevcCompression.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 4,
+                            "sh2": 4,
+                            "sh3": 4
                         }
                     }
                 )
