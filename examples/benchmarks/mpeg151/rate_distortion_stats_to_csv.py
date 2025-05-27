@@ -8,7 +8,7 @@ def main(
     exp_dir: Annotated[str, "Path to the experiment directory, e.g. results/mpeg151/video_anchor/bartender"]
 ):
     # File paths for four rate points
-    all_rps = ["rp0", "rp1", "rp2", "rp3", "rp4"]
+    all_rps = ["rp0", "rp1", "rp2", "rp3"]
     metrics_paths = [
         os.path.join(exp_dir, f"{rp}/stats/gsc_metrics.json") for rp in all_rps
     ]
@@ -48,6 +48,10 @@ def main(
                     bitrates[rp_idx]
                 ]
                 writer.writerow(row)
+            # Add empty rows for the missing rate points
+            if rp_idx < 4:
+                for _ in range(4 - rp_idx):
+                    writer.writerow([])
 
     print(f"gsc_metrics_all.csv has been generated at {csv_path} and can be opened with Excel.")
 

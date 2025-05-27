@@ -8,6 +8,7 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from torch.utils.data import Dataset, DataLoader
 
 def run_QMIV_metric(render_YUV_filename: Path, ref_YUV_filename: Path, 
                     render_start_frame: int = 0, ref_start_frame: int = 0,
@@ -165,7 +166,8 @@ def run_QMIV_metric_for_pngs(
     ]
 
     result = subprocess.run(QMIV_cmd, capture_output=True, text=True)
-    print(result.stderr)
+    if result.stderr:
+        print(result.stderr)
     # YCbCr domain
     QMIV_cmd = [
         "./helper/mpeg_gsc/QMIV",
@@ -180,7 +182,8 @@ def run_QMIV_metric_for_pngs(
     ]
 
     result = subprocess.run(QMIV_cmd, capture_output=True, text=True)
-    print(result.stderr)
+    if result.stderr:
+        print(result.stderr)
 
     with open(saved_log_file, 'r') as f:
         content = f.read()
@@ -199,29 +202,83 @@ def run_QMIV_metric_for_pngs(
 
     return ret_dict
 
+class ImageSequenceDataset(Dataset):
+    def __init__(self, file_pattern: str):
+        """
+        Dataset for loading image sequences
+        
+        Args:
+            file_pattern: Complete file path pattern, e.g. "results/.../val_frame{:03d}_testv000.png"
+        """
+        path = Path(file_pattern).parent
+        glob_pattern = format_to_glob_pattern(Path(file_pattern).name)
+        self.files = sorted(path.glob(glob_pattern))
+        
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),  # Convert PIL image to tensor and normalize to [0,1]
+        ])
+    
+    def __len__(self):
+        return len(self.files)
+    
+    def __getitem__(self, idx):
+        image = Image.open(self.files[idx])
+        return self.transform(image)
+
 def run_LPIPS_for_pngs(
     render_png_filename: Path, 
     ref_png_filename: Path, 
     lpips_calculator: LearnedPerceptualImagePatchSimilarity,
 ):
-    # collect png files and convert to tensor
-    render_tensors = load_image_sequence_to_tensors(render_png_filename)
-    ref_tensors = load_image_sequence_to_tensors(ref_png_filename)
-
-    # calculate lpips
-    chunk_size = 2
+    device = lpips_calculator.device
+    
+    # Create datasets
+    render_dataset = ImageSequenceDataset(str(render_png_filename))
+    ref_dataset = ImageSequenceDataset(str(ref_png_filename))
+    
+    # Create dataloaders with multiple workers and prefetching
+    batch_size = 2  # Adjust based on GPU memory
+    num_workers = 4  # Adjust based on CPU cores
+    
+    render_loader = DataLoader(
+        render_dataset, 
+        batch_size=batch_size, 
+        shuffle=False,  # Keep order for sequence
+        num_workers=num_workers,
+        pin_memory=True,  # Faster GPU transfer
+        prefetch_factor=2  # Prefetch batches
+    )
+    
+    ref_loader = DataLoader(
+        ref_dataset, 
+        batch_size=batch_size, 
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        prefetch_factor=2
+    )
+    
     lpips_values_list = []
-    for i in range(0, render_tensors.shape[0], chunk_size):
-        lpips_values = lpips_calculator(render_tensors[i:i+chunk_size].to(lpips_calculator.device), 
-                                        ref_tensors[i:i+chunk_size].to(lpips_calculator.device))
-        lpips_values_list.append(lpips_values)
-    lpips_values = torch.stack(lpips_values_list, dim=0).mean()
-
-    ret_dict = {
-        "LPIPS": lpips_values.item(),
-    }
-
-    return ret_dict
+    
+    with torch.no_grad():
+        for render_batch, ref_batch in zip(render_loader, ref_loader):
+            # Move to device (faster with pin_memory=True)
+            render_batch = render_batch.to(device, non_blocking=True)
+            ref_batch = ref_batch.to(device, non_blocking=True)
+            
+            # Calculate LPIPS
+            lpips_values = lpips_calculator(render_batch, ref_batch)
+            
+            # Convert to Python float and append
+            lpips_values_list.append(lpips_values.item())
+            
+            # Optional: clear cache if memory is tight
+            torch.cuda.empty_cache()
+    
+    # Calculate mean
+    lpips_mean = sum(lpips_values_list) / len(lpips_values_list)
+    
+    return {"LPIPS": lpips_mean}
 
 def format_to_glob_pattern(format_str):
     return re.sub(r'\{:0\d+d\}', '*', format_str)

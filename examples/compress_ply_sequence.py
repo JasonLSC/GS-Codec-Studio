@@ -318,6 +318,8 @@ class Config:
     frame_num: int = 1
     # anchor type
     anchor_type: Literal["video", "pcc"] = "video"
+    # GOP size
+    gop_size: int = 16
 
 class Runner:
     def __init__(
@@ -426,12 +428,26 @@ class Runner:
             shutil.rmtree(compress_dir)
         os.makedirs(compress_dir)
 
-        splats_videos = self.compression_method.reorganize(self.splats_list)
-        self.compression_method.compress(compress_dir)
-        video_splats_c = self.compression_method.decompress(compress_dir)
-        splats_list_c = self.compression_method.deorganize(video_splats_c)
+        # compression: loop on GOPs
+        num_gop = (self.frame_num + self.cfg.gop_size - 1) // self.cfg.gop_size
+        for gop_id in range(num_gop):
+            gop_start_frame_id = gop_id * self.cfg.gop_size
+            gop_end_frame_id = min(gop_start_frame_id + self.cfg.gop_size, self.frame_num)
 
-        for splats, splats_c in zip(self.splats_list, splats_list_c):
+            splats_videos = self.compression_method.reorganize(self.splats_list[gop_start_frame_id:gop_end_frame_id], gop_id)
+            self.compression_method.compress(splats_videos, compress_dir, gop_id)
+
+        # decompression: loop on GOPs
+        full_splats_list_c = []
+        for gop_id in range(num_gop):
+            gop_start_frame_id = gop_id * self.cfg.gop_size
+            gop_end_frame_id = min(gop_start_frame_id + self.cfg.gop_size, self.frame_num)
+
+            video_splats_c = self.compression_method.decompress(compress_dir, gop_id)
+            splats_list_c = self.compression_method.deorganize(video_splats_c)
+            full_splats_list_c.extend(splats_list_c)
+
+        for splats, splats_c in zip(self.splats_list, full_splats_list_c):
             for k in splats.keys():
                 splats[k].data = splats_c[k].to(self.device)
 
@@ -707,21 +723,42 @@ class Runner:
         os.makedirs(f"{self.cfg.result_dir}/log", exist_ok=True)
 
         gsc_metrics_across_test_views = defaultdict(dict)
-        for test_view_id in tqdm(range(len(self.cfg.test_view_id)), desc="Using QMIV to calculate quality metrics"):
-
+        
+        # Create progress bar
+        pbar = tqdm(range(len(self.cfg.test_view_id)), desc="Calculating quality metrics")
+        
+        for i, test_view_id in enumerate(self.cfg.test_view_id):
             render_png_filename = Path(f"{self.cfg.result_dir}/renders/compress_frame{{:03d}}_testv{test_view_id:03d}.png")
             ref_png_filename = Path(f"{self.cfg.result_dir}/renders/val_frame{{:03d}}_testv{test_view_id:03d}.png")
             saved_log_file = Path(f"{self.cfg.result_dir}/log/QMIV_testv{test_view_id:03d}.txt")
 
+            # Record QMIV timing
+            start_time = time.time()
             gsc_metrics = run_QMIV_metric_for_pngs(render_png_filename,
                                                 ref_png_filename,
                                                 resolution=resolution,
                                                 saved_log_file=saved_log_file)
+            qmiv_time = time.time() - start_time
+            
+            # Record LPIPS timing
+            start_time = time.time()
             lpips_dict = run_LPIPS_for_pngs(render_png_filename,
                                         ref_png_filename,
                                         lpips_calculator=self.lpips)
+            lpips_time = time.time() - start_time
+            
             gsc_metrics.update(lpips_dict)
             gsc_metrics_across_test_views[f"testv{test_view_id:03d}"] = gsc_metrics
+            
+            # Update progress bar with timing info
+            pbar.set_postfix({
+                'QMIV': f'{qmiv_time:.1f}s',
+                'LPIPS': f'{lpips_time:.1f}s',
+                'Total': f'{qmiv_time + lpips_time:.1f}s'
+            })
+            pbar.update(1)
+        
+        pbar.close()
 
         metric_names = gsc_metrics_across_test_views[f"testv{0:03d}"].keys()
         for metric in metric_names:
@@ -732,40 +769,6 @@ class Runner:
         # save quality metrics from each views and average metrics
         with open(os.path.join(self.cfg.result_dir, "stats", "gsc_metrics.json"), "w") as fp:
             json.dump(gsc_metrics_across_test_views, fp, indent=4)
-
-    # deprecated
-    # def eval_with_gsc_ctc_metrics(self, ):
-    #     from helper.mpeg_gsc.gsc_metric import run_QMIV_metric
-    #     from pathlib import Path
-    #     height, width = self.valset_list[0][0]["image"].shape[0:2]
-    #     resolution = f"{width}x{height}"
-
-    #     # path to save QMIV log
-    #     # if os.path.exists(f"{self.cfg.result_dir}/log"):
-    #     #     shutil.rmtree(f"{self.cfg.result_dir}/log")
-    #     os.makedirs(f"{self.cfg.result_dir}/log", exist_ok=True)
-
-    #     gsc_metrics_across_test_views = defaultdict(dict)
-    #     for test_view_id in range(len(self.cfg.test_view_id)):
-    #         render_YUV_filename = Path(f"{self.cfg.result_dir}/renders/compress_testv{test_view_id:03d}.yuv")
-    #         ref_YUV_filename = Path(f"{self.cfg.result_dir}/renders/val_testv{test_view_id:03d}.yuv")
-    #         saved_log_file = Path(f"{self.cfg.result_dir}/log/QMIV_testv{test_view_id:03d}.txt")
-
-    #         gsc_metrics = run_QMIV_metric(render_YUV_filename,
-    #                                       ref_YUV_filename,
-    #                                       resolution=resolution,
-    #                                       saved_log_file=saved_log_file,
-    #                                       pix_fmt="yuv420p")
-    #         gsc_metrics_across_test_views[f"testv{test_view_id:03d}"] = gsc_metrics
-        
-    #     metric_names = gsc_metrics_across_test_views[f"testv{0:03d}"].keys()
-    #     for metric in metric_names:
-    #         total = sum(gsc_metrics_across_test_views[f"testv{i:03d}"][metric] 
-    #                 for i in range(len(self.cfg.test_view_id)))
-    #         gsc_metrics_across_test_views["average"][metric] = total / len(self.cfg.test_view_id)
-        
-    #     with open(os.path.join(self.cfg.result_dir, "stats", "gsc_metrics.json"), "w") as fp:
-    #         json.dump(gsc_metrics_across_test_views, fp, indent=4)
 
     def summary(self,):
         import pandas as pd
@@ -792,7 +795,7 @@ class Runner:
         file_sizes = {}
         total_size = 0
         
-        # Get file sizes from directory
+        # Get file sizes from files in the "compression" directory
         for item in os.listdir(directory_path):
             item_path = os.path.join(directory_path, item)
             if os.path.isfile(item_path):
@@ -875,7 +878,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     else:
         raise NotImplementedError(f"{cfg.anchor_type} Anchor has not been implemented.")
     
-    runner.stack_render_img_to_vid()
+    # runner.stack_render_img_to_vid()
     runner.eval_pngs_with_gsc_ctc_metrics()
     # runner.eval_with_gsc_ctc_metrics()
     runner.summary()
@@ -939,26 +942,6 @@ if __name__ == "__main__":
                 compression_cfg=VideoCompressionConfig(
                     qp={
                         "means": -1,
-                        "opacities": 22,
-                        "quats": 28,
-                        "scales": 28,
-                        "sh0": 22,
-                        "shN": {
-                            "sh1": 34,
-                            "sh2": 40,
-                            "sh3": 46
-                        }
-                    }
-                )
-            )
-        ),
-        "x265_compression_rp1": (
-            "Use HevcCompression.",
-            Config(
-                compression="seq_hevc",
-                compression_cfg=VideoCompressionConfig(
-                    qp={
-                        "means": -1,
                         "opacities": 16,
                         "quats": 22,
                         "scales": 22,
@@ -972,7 +955,7 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "x265_compression_rp2": (
+        "x265_compression_rp1": (
             "Use HevcCompression.",
             Config(
                 compression="seq_hevc",
@@ -992,7 +975,7 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "x265_compression_rp3": (
+        "x265_compression_rp2": (
             "Use HevcCompression.",
             Config(
                 compression="seq_hevc",
@@ -1012,7 +995,7 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "x265_compression_rp4": (
+        "x265_compression_rp3": (
             "Use HevcCompression.",
             Config(
                 compression="seq_hevc",

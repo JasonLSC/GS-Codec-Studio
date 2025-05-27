@@ -127,49 +127,52 @@ class SeqHevcCompression:
         else:
             return _decompress_npz
     
-    def compress(self, compress_dir: str) -> None:
+    def compress(self, splats_videos: Dict[str, Tensor], compress_dir: str, gop_id: int = 0) -> None:
         """Run compression
 
         Args:
+            splats_videos (Dict[str, Tensor]): dictionary of splats videos in Tensor format
             compress_dir (str): directory to save compressed files
+            gop_id (int): gop id
         """
 
         # Param-specific preprocessing
         # splats["means"] = log_transform(splats["means"])
-        self.splats_videos["quats"] = F.normalize(self.splats_videos["quats"], dim=-1)
+        # splats_videos["quats"] = F.normalize(splats_videos["quats"], dim=-1) # already normalized in the reorganize function
 
         meta = {}
-        for param_name in self.splats_videos.keys():
+        for param_name in splats_videos.keys():
             compress_fn = self._get_compress_fn(param_name)
             kwargs = {
-                "n_sidelen": int(self.splats_videos["means"].size(1)),
+                "n_sidelen": int(splats_videos["means"].size(1)),
                 "qp": self.qp[param_name],
                 "use_all_intra": self.use_all_intra,
-                "debug": self.debug
+                "debug": self.debug,
+                "gop_id": gop_id
             }
             meta[param_name] = compress_fn(
-                compress_dir, param_name, self.splats_videos[param_name], **kwargs
+                compress_dir, param_name, splats_videos[param_name], **kwargs
             )
 
-        with open(os.path.join(compress_dir, "meta.json"), "w") as f:
+        with open(os.path.join(compress_dir, f"gop{gop_id}_meta.json"), "w") as f:
             json.dump(meta, f)
 
-    def decompress(self, compress_dir: str) -> Dict[str, Tensor]:
+    def decompress(self, compress_dir: str, gop_id: int = 0) -> Dict[str, Tensor]:
         """Run decompression
 
         Args:
             compress_dir (str): directory that contains compressed files
 
         Returns:
-            Dict[str, Tensor]: decompressed Gaussian splats
+            Dict[str, Tensor]: decompressed Gaussian splats videos
         """
-        with open(os.path.join(compress_dir, "meta.json"), "r") as f:
+        with open(os.path.join(compress_dir, f"gop{gop_id}_meta.json"), "r") as f:
             meta = json.load(f)
 
         splats = {}
         for param_name, param_meta in meta.items():
             decompress_fn = self._get_decompress_fn(param_name)
-            splats[param_name] = decompress_fn(compress_dir, param_name, param_meta)
+            splats[param_name] = decompress_fn(compress_dir, param_name, param_meta, gop_id)
 
         # Param-specific postprocessing
         # splats["means"] = inverse_log_transform(splats["means"])
@@ -233,7 +236,16 @@ class SeqHevcCompression:
         
         return splats_videos
     
-    def reorganize(self, splats_list: List[Dict]) -> Dict[str, Tensor]:
+    def reorganize(self, splats_list: List[Dict], gop_id: int = 0) -> Dict[str, Tensor]:
+        '''
+        Organize the list of splats into a dictionary of splats videos.
+        Args:
+            splats_list (List[Dict]): list of splats
+            gop_id (int): gop id
+
+        Returns:
+            Dict[str, Tensor]: dictionary of splats videos in Tensor format
+        '''
         # splat list to sequence of attributes
         seq_attr_dict = self.splats_list_to_attribute_seq(splats_list)
         # pad
@@ -260,20 +272,28 @@ class SeqHevcCompression:
         # reshape to 2d sequences
         n_gs = padded_splats_videos["means"].size(1)
         n_sidelen = int(n_gs**0.5)
-        self.splats_videos = {}
+        splats_videos = {}
         for attr_name, padded_splats_video in padded_splats_videos.items(): 
             ori_shape = list(padded_splats_video.shape)
             new_shape = [ori_shape[0]] + [n_sidelen, n_sidelen] + ori_shape[2:]
-            self.splats_videos[attr_name] = padded_splats_video.reshape(new_shape)
+            splats_videos[attr_name] = padded_splats_video.reshape(new_shape)
 
             print(attr_name, padded_splats_video.shape)
 
         # proprocessing on splats_videos
-        self.splats_videos["quats"] = F.normalize(self.splats_videos["quats"], dim=-1)
+        splats_videos["quats"] = F.normalize(splats_videos["quats"], dim=-1)
 
-        return self.splats_videos
+        return splats_videos
 
     def deorganize(self, splats_videos_c: Dict[str, Tensor]) -> List[Dict]:
+        '''
+        Deorganize the dictionary of splats videos into a list of splats.
+        Args:
+            splats_videos_c (Dict[str, Tensor]): dictionary of splats videos in Tensor format
+
+        Returns:
+            List[Dict]: list of splats
+        '''
         flattened_splats_videos = {}
         for attr_name, splats_video in splats_videos_c.items():
             ori_shape = list(splats_video.shape)
@@ -310,7 +330,8 @@ def _compress_video_hevc(
         n_sidelen: int, 
         qp: int = 10, 
         debug: bool = False,
-        use_all_intra: bool = False
+        use_all_intra: bool = False,
+        gop_id: int = 0
 ) -> Dict[str, Any]:
     import imageio.v2 as imageio
     n_frames = int(params.size(0))
@@ -322,30 +343,31 @@ def _compress_video_hevc(
     video_norm = grid_norm.detach().cpu().numpy()
 
     video = (video_norm * (2**8 - 1)).round().astype(np.uint8)
+    # save the Tensor as a numpy file for decoder-side check
     if video.shape[-1] != 3:
         video = video[..., 0]
-    np.save(os.path.join(compress_dir, f"{param_name}.npy"), video)
+    np.save(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"), video)
 
     # save each frame
     # if len(video.shape) == 2:  
     #     imageio.imwrite(os.path.join(compress_dir, f"{param_name}_frame000.png"), video)
     # else:  
     for i in range(n_frames):
-        imageio.imwrite(os.path.join(compress_dir, f"{param_name}_frame{i:03d}.png"), video[i])
+        imageio.imwrite(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_frame{i:03d}.png"), video[i])
     
     # run ffmpeg libx265 to compress PNG file
     file_extension = ".265" if debug else ".mp4"
-    video_file = os.path.join(compress_dir, f"{param_name}.{file_extension[1:]}")
+    video_file = os.path.join(compress_dir, f"gop{gop_id}_{param_name}.{file_extension[1:]}")
 
     print(f"QP value of {param_name} is: {qp}")
     pix_fmt = "-pix_fmt gray" if param_name == "opacities" else ""
     intra_params = ":keyint=1:min-keyint=1:scenecut=0" if use_all_intra else ""
-    cmd = f"ffmpeg -i {compress_dir}/{param_name}_frame%03d.png -c:v libx265 {pix_fmt} -x265-params \"qp={qp}{intra_params}\" {video_file}"
+    cmd = f"ffmpeg -i {compress_dir}/gop{gop_id}_{param_name}_frame%03d.png -c:v libx265 {pix_fmt} -x265-params \"qp={qp}{intra_params}\" {video_file}"
 
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
     # remove png files
-    png_files = sorted(glob.glob(os.path.join(compress_dir, f"{param_name}_frame*.png")))
+    png_files = sorted(glob.glob(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_frame*.png")))
     for png_file in png_files:
         os.remove(png_file)
     
@@ -354,15 +376,15 @@ def _compress_video_hevc(
         "dtype": str(params.dtype).split(".")[1],
         "mins": mins.tolist(),
         "maxs": maxs.tolist(),
-        "file_extension": file_extension
+        "file_extension": file_extension,
     }
     return meta
 
-def _decompress_video_hevc(compress_dir: str, param_name: str, meta: Dict[str, Any]):
+def _decompress_video_hevc(compress_dir: str, param_name: str, meta: Dict[str, Any], gop_id: int = 0):   
     import imageio.v2 as imageio
 
     file_extension = meta["file_extension"]
-    reader = imageio.get_reader(os.path.join(compress_dir, f"{param_name}.{file_extension[1:]}"), format='FFMPEG')
+    reader = imageio.get_reader(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.{file_extension[1:]}"), format='FFMPEG')
 
     frames = []
     for i, frame in enumerate(reader):
@@ -373,10 +395,10 @@ def _decompress_video_hevc(compress_dir: str, param_name: str, meta: Dict[str, A
         video = video[..., 0]
     
     # report the PSNR between reconstructed videos and original videos
-    raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
+    raw_video = np.load(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"))
     cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(255) - 10*np.log10(d)
     print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
-    os.remove(os.path.join(compress_dir, f"{param_name}.npy"))
+    os.remove(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"))
 
     video_norm = video / (2**8 - 1)
 
@@ -396,7 +418,8 @@ def _compress_video_hevc_16bit(
         n_sidelen: int, 
         qp: int = 10, 
         debug: bool = False,
-        use_all_intra: bool = False
+        use_all_intra: bool = False,
+        gop_id: int = 0
 ) -> Dict[str, Any]:
     import imageio.v2 as imageio
     n_frames = int(params.size(0))
@@ -408,7 +431,7 @@ def _compress_video_hevc_16bit(
     video_norm = grid_norm.detach().cpu().numpy()
 
     video = (video_norm * (2**16 - 1)).round().astype(np.uint16)
-    np.save(os.path.join(compress_dir, f"{param_name}.npy"), video,)
+    np.save(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"), video,)
 
     video_l = video & 0xFF
     video_u = (video >> 8) & 0xFF
@@ -416,19 +439,19 @@ def _compress_video_hevc_16bit(
     # save each frame
     for i in range(len(video)):
         imageio.imwrite(
-            os.path.join(compress_dir, f"{param_name}_l_frame{i:03d}.png"), video_l[i].astype(np.uint8)
+            os.path.join(compress_dir, f"gop{gop_id}_{param_name}_l_frame{i:03d}.png"), video_l[i].astype(np.uint8)
         )
         imageio.imwrite(
-            os.path.join(compress_dir, f"{param_name}_u_frame{i:03d}.png"), video_u[i].astype(np.uint8)
+            os.path.join(compress_dir, f"gop{gop_id}_{param_name}_u_frame{i:03d}.png"), video_u[i].astype(np.uint8)
         )
     
     for byte_select in ['l', 'u']:
         file_extension = ".265" if debug else ".mp4"
-        video_file = os.path.join(compress_dir, f"{param_name}_{byte_select}.{file_extension[1:]}")
+        video_file = os.path.join(compress_dir, f"gop{gop_id}_{param_name}_{byte_select}.{file_extension[1:]}")
 
         # old
         intra_params = ":keyint=1:min-keyint=1:scenecut=0" if use_all_intra else ""
-        cmd = f"ffmpeg -i {compress_dir}/{param_name}_{byte_select}_frame%03d.png -c:v libx265 -x265-params \"lossless=1:preset=veryslow{intra_params}\" {video_file}"
+        cmd = f"ffmpeg -i {compress_dir}/gop{gop_id}_{param_name}_{byte_select}_frame%03d.png -c:v libx265 -x265-params \"lossless=1:preset=veryslow{intra_params}\" {video_file}"
         
         # new
         # intra_params = "-intra" if use_all_intra else ""
@@ -438,7 +461,7 @@ def _compress_video_hevc_16bit(
 
     # remove png files
     if not debug:
-        png_files = sorted(glob.glob(os.path.join(compress_dir, f"{param_name}_*.png")))
+        png_files = sorted(glob.glob(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_*.png")))
         for png_file in png_files:
             os.remove(png_file)
 
@@ -452,13 +475,13 @@ def _compress_video_hevc_16bit(
     return meta
 
 def _decompress_video_hevc_16bit(
-        compress_dir: str, param_name: str, meta: Dict[str, Any]
+        compress_dir: str, param_name: str, meta: Dict[str, Any], gop_id: int = 0
 ) -> Tensor:
     import imageio.v2 as imageio
 
     file_extension = meta["file_extension"]
-    reader_l = imageio.get_reader(os.path.join(compress_dir, f"{param_name}_l.{file_extension[1:]}"), format='FFMPEG')
-    reader_u = imageio.get_reader(os.path.join(compress_dir, f"{param_name}_u.{file_extension[1:]}"), format='FFMPEG')
+    reader_l = imageio.get_reader(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_l.{file_extension[1:]}"), format='FFMPEG')
+    reader_u = imageio.get_reader(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_u.{file_extension[1:]}"), format='FFMPEG')
 
     frames = []    
     for i, (frame_l, frame_u) in enumerate(zip(reader_l, reader_u)):
@@ -469,10 +492,10 @@ def _decompress_video_hevc_16bit(
     video = np.stack(frames, axis=0)
 
     # report the PSNR between reconstructed videos and original videos
-    raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
+    raw_video = np.load(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"))
     cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(65535) - 10*np.log10(d)
     print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
-    os.remove(os.path.join(compress_dir, f"{param_name}.npy"))
+    os.remove(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"))
 
     video_norm = video / (2**16 - 1)
 
@@ -492,7 +515,8 @@ def _compress_quats_video_hevc(
         n_sidelen: int, 
         qp: int = 10, 
         debug: bool = False,
-        use_all_intra: bool = True
+        use_all_intra: bool = True,
+        gop_id: int = 0
 ) -> Dict[str, Any]:
     import imageio.v2 as imageio
     n_frames = int(params.size(0))
@@ -505,32 +529,32 @@ def _compress_quats_video_hevc(
 
     video = (video_norm * (2**8 - 1)).round().astype(np.uint8)
     # video = video.squeeze()
-    np.save(os.path.join(compress_dir, f"{param_name}.npy"), video,)
+    np.save(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"), video,)
 
     video_w = video[..., 0] # [T, H, W]
     video_xyz = video[..., 1:] # [T, H, W, 3]
 
     for i in range(len(video)):
-        imageio.imwrite(os.path.join(compress_dir, f"{param_name}_w_frame{i:03d}.png"), video_w[i])
-        imageio.imwrite(os.path.join(compress_dir, f"{param_name}_xyz_frame{i:03d}.png"), video_xyz[i])
+        imageio.imwrite(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_w_frame{i:03d}.png"), video_w[i])
+        imageio.imwrite(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_xyz_frame{i:03d}.png"), video_xyz[i])
 
     # run ffmpeg libx265 to compress PNG file
     file_extension = ".265" if debug else ".mp4"
     intra_params = ":keyint=1:min-keyint=1:scenecut=0" if use_all_intra else ""
 
-    video_file = os.path.join(compress_dir, f"{param_name}_w.{file_extension[1:]}")
+    video_file = os.path.join(compress_dir, f"gop{gop_id}_{param_name}_w.{file_extension[1:]}")
     print(f"QP value of {param_name}_w is: {qp}")
-    cmd = f"ffmpeg -i {compress_dir}/{param_name}_w_frame%03d.png -c:v libx265 -pix_fmt gray -x265-params \"qp={qp}{intra_params}\" {video_file}"
+    cmd = f"ffmpeg -i {compress_dir}/gop{gop_id}_{param_name}_w_frame%03d.png -c:v libx265 -pix_fmt gray -x265-params \"qp={qp}{intra_params}\" {video_file}"
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
-    video_file = os.path.join(compress_dir, f"{param_name}_xyz.{file_extension[1:]}")
+    video_file = os.path.join(compress_dir, f"gop{gop_id}_{param_name}_xyz.{file_extension[1:]}")
     print(f"QP value of {param_name}_xyz is: {qp}")
-    cmd = f"ffmpeg -i {compress_dir}/{param_name}_xyz_frame%03d.png -c:v libx265 -x265-params \"qp={qp}{intra_params}\" {video_file}"
+    cmd = f"ffmpeg -i {compress_dir}/gop{gop_id}_{param_name}_xyz_frame%03d.png -c:v libx265 -x265-params \"qp={qp}{intra_params}\" {video_file}"
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
     # remove png files
     if not debug:
-        png_files = sorted(glob.glob(os.path.join(compress_dir, f"{param_name}_*.png")))
+        png_files = sorted(glob.glob(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_*.png")))
         for png_file in png_files:
             os.remove(png_file)
     
@@ -544,13 +568,13 @@ def _compress_quats_video_hevc(
     return meta    
 
 def _decompress_quats_video_hevc(
-        compress_dir: str, param_name: str, meta: Dict[str, Any]
+        compress_dir: str, param_name: str, meta: Dict[str, Any], gop_id: int = 0
 ):
     import imageio.v2 as imageio
 
     file_extension = meta["file_extension"]
-    reader_w = imageio.get_reader(os.path.join(compress_dir, f"{param_name}_w.{file_extension[1:]}"), format='FFMPEG')
-    reader_xyz = imageio.get_reader(os.path.join(compress_dir, f"{param_name}_xyz.{file_extension[1:]}"), format='FFMPEG')
+    reader_w = imageio.get_reader(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_w.{file_extension[1:]}"), format='FFMPEG')
+    reader_xyz = imageio.get_reader(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_xyz.{file_extension[1:]}"), format='FFMPEG')
 
     frames = []
     for frame_w, frame_xyz in zip(reader_w, reader_xyz):
@@ -560,10 +584,10 @@ def _decompress_quats_video_hevc(
     video = np.stack(frames, axis=0)
 
     # report the PSNR between reconstructed videos and original videos
-    raw_video = np.load(os.path.join(compress_dir, f"{param_name}.npy"))
+    raw_video = np.load(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"))
     cal_psnr = lambda x, y: float('inf') if (d := np.mean((x-y)**2)) == 0 else 20*np.log10(255) - 10*np.log10(d)
     print(f"PSNR of \"{param_name}\" map after video coding: {cal_psnr(raw_video, video)} dB")
-    os.remove(os.path.join(compress_dir, f"{param_name}.npy"))   
+    os.remove(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npy"))   
 
     video_norm = video / (2**8 - 1)
     grid_norm = torch.tensor(video_norm)
@@ -584,7 +608,8 @@ def _compress_shN_video_hevc(
         n_sidelen: int, 
         qp: Dict[str, int], 
         debug: bool = False,
-        use_all_intra: bool = False
+        use_all_intra: bool = False,
+        gop_id: int = 0
 ) -> Dict[str, Any]:
     import imageio.v2 as imageio
     n_frames = int(params.size(0))
@@ -606,19 +631,19 @@ def _compress_shN_video_hevc(
     for f_id in range(n_frames):
         for shN_id, shN_name in enumerate(shN_name_list):
             image = shN_norm[f_id,:,:,shN_id,:]
-            imageio.imwrite(os.path.join(compress_dir, f"{param_name}_{shN_name}_frame{f_id:03d}.png"), image)
+            imageio.imwrite(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_{shN_name}_frame{f_id:03d}.png"), image)
     
     file_extension = ".265" if debug else ".mp4"
     intra_params = ":keyint=1:min-keyint=1:scenecut=0" if use_all_intra else ""
     for shN_id, shN_name in enumerate(shN_name_list):
         print(f"QP value of {shN_name} is: {qp[shN_name[0:3]]}")
-        video_file = os.path.join(compress_dir, f"{param_name}_{shN_name}.{file_extension[1:]}")
-        cmd = f"ffmpeg -i {compress_dir}/{param_name}_{shN_name}_frame%03d.png -c:v libx265 -x265-params \"qp={qp[shN_name[0:3]]}{intra_params}\" {video_file}"
+        video_file = os.path.join(compress_dir, f"gop{gop_id}_{param_name}_{shN_name}.{file_extension[1:]}")
+        cmd = f"ffmpeg -i {compress_dir}/gop{gop_id}_{param_name}_{shN_name}_frame%03d.png -c:v libx265 -x265-params \"qp={qp[shN_name[0:3]]}{intra_params}\" {video_file}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     
     # remove png files
     if not debug:
-        png_files = sorted(glob.glob(os.path.join(compress_dir, f"{param_name}_*.png")))
+        png_files = sorted(glob.glob(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_*.png")))
         for png_file in png_files:
             os.remove(png_file)
     
@@ -632,7 +657,7 @@ def _compress_shN_video_hevc(
     return meta
 
 def _decompress_shN_video_hevc(
-        compress_dir: str, param_name: str, meta: Dict[str, Any]
+        compress_dir: str, param_name: str, meta: Dict[str, Any], gop_id: int = 0
 ):
     import imageio.v2 as imageio
 
@@ -645,7 +670,7 @@ def _decompress_shN_video_hevc(
 
     shN_reader_list = []
     for shN_name in shN_name_list:
-        shN_reader_list.append(imageio.get_reader(os.path.join(compress_dir, f"{param_name}_{shN_name}.{file_extension[1:]}"), format='FFMPEG'))
+        shN_reader_list.append(imageio.get_reader(os.path.join(compress_dir, f"gop{gop_id}_{param_name}_{shN_name}.{file_extension[1:]}"), format='FFMPEG'))
 
     shN_video_list = []
     for shN_reader in shN_reader_list: # loop on shN components
@@ -668,11 +693,11 @@ def _decompress_shN_video_hevc(
     return params 
 
 def _compress_npz(
-    compress_dir: str, param_name: str, params: Tensor, **kwargs
+    compress_dir: str, param_name: str, params: Tensor, gop_id: int = 0, **kwargs
 ) -> Dict[str, Any]:
     """Compress parameters with numpy's NPZ compression."""
     npz_dict = {"arr": params.detach().cpu().numpy()}
-    save_fp = os.path.join(compress_dir, f"{param_name}.npz")
+    save_fp = os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npz")
     os.makedirs(os.path.dirname(save_fp), exist_ok=True)
     np.savez_compressed(save_fp, **npz_dict)
     meta = {
@@ -682,9 +707,9 @@ def _compress_npz(
     return meta
 
 
-def _decompress_npz(compress_dir: str, param_name: str, meta: Dict[str, Any]) -> Tensor:
+def _decompress_npz(compress_dir: str, param_name: str, meta: Dict[str, Any], gop_id: int = 0) -> Tensor:
     """Decompress parameters with numpy's NPZ compression."""
-    arr = np.load(os.path.join(compress_dir, f"{param_name}.npz"))["arr"]
+    arr = np.load(os.path.join(compress_dir, f"gop{gop_id}_{param_name}.npz"))["arr"]
     params = torch.tensor(arr)
     params = params.reshape(meta["shape"])
     params = params.to(dtype=getattr(torch, meta["dtype"]))

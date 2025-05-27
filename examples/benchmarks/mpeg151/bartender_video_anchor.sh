@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the list of GPU IDs to use
-GPU_IDS=(3 4 5 6 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+GPU_IDS=(0 1 2 3)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
 EXP_DIR=results/mpeg151/video_anchor/bartender
 
@@ -17,7 +17,8 @@ run_experiment() {
         --ply_dir /work/Users/lisicheng/Dataset/GSC_splats/m71763_bartender_stable/track \
         --data_dir /work/Users/lisicheng/Dataset/GSC_splats/m71763_bartender_stable/colmap_data \
         --result_dir ${EXP_DIR}/rp${rp_id} \
-        --frame_num 16 \
+        --frame_num 32 \
+        --gop_size 16 \
         --lpips_net vgg \
         --no-normalize_world_space \
         --scene_type GSC \
@@ -28,12 +29,12 @@ run_experiment() {
 }
 
 # Check if the number of GPUs is sufficient
-if [ ${#GPU_IDS[@]} -lt 5 ]; then
+if [ ${#GPU_IDS[@]} -lt 4 ]; then
     echo "Warning: Number of GPUs is less than the number of experiments, some experiments will be skipped"
 fi
 
 # Launch experiments in parallel
-for i in {0..4}; do
+for i in {0..3}; do
     if [ $i -lt ${#GPU_IDS[@]} ]; then
         run_experiment ${GPU_IDS[$i]} $i &
         echo "Launched experiment rp${i} on GPU ${GPU_IDS[$i]} in background"
