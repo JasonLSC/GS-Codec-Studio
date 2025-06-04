@@ -878,7 +878,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     else:
         raise NotImplementedError(f"{cfg.anchor_type} Anchor has not been implemented.")
     
-    # runner.stack_render_img_to_vid()
+    runner.stack_render_img_to_vid()
     runner.eval_pngs_with_gsc_ctc_metrics()
     # runner.eval_with_gsc_ctc_metrics()
     runner.summary()
