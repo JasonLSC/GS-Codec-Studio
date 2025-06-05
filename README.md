@@ -4,6 +4,9 @@ GSCodec Studio is an open-source framework for Gaussian Splats Compression, incl
 
 ![Teaser](./assets/Teaser.png)
 
+## News
+**June 5, 2025:** The [paper](https://arxiv.org/abs/2506.01822) about this framework has been released on arXiv.
+
 ## Installation
 ### Repo. & Environment
 ```bash
