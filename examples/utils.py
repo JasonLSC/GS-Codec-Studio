@@ -162,6 +162,49 @@ def set_random_seed(seed: int):
     torch.backends.cudnn.benchmark = False
     os.environ['PYTHONHASHSEED'] = str(seed)
 
+def verify_random_seed(result_dir: str):
+    """
+    Verify random seed consistency by generating a checksum and save to file
+    Should be called after set_random_seed()
+    
+    Args:
+        result_dir: Directory to save the checksum file
+    
+    Returns:
+        str: MD5 checksum of generated random numbers
+    """
+    import hashlib
+    import os
+    
+    # Generate random numbers from different generators
+    test_results = {
+        'python_random': random.random(),
+        'numpy_random': np.random.rand(),
+        'torch_random': torch.rand(1).item(),
+    }
+    
+    # Test CUDA random numbers if available
+    if torch.cuda.is_available():
+        test_results['torch_cuda_random'] = torch.cuda.FloatTensor(1).uniform_().item()
+    
+    # Generate checksum from results
+    result_str = ""
+    for key in sorted(test_results.keys()):
+        result_str += f"{key}:{test_results[key]:.10f};"
+    
+    checksum = hashlib.md5(result_str.encode()).hexdigest()
+    
+    # Write checksum to file
+    checksum_file = os.path.join(result_dir, 'seed_checksum.txt')
+    with open(checksum_file, 'w') as f:
+        f.write(checksum)
+    
+    print(f"Random seed checksum: {checksum}")
+    print(f"Checksum saved to: {checksum_file}")
+    print("Sample results:", test_results)
+    
+    return checksum
+
 
 # ref: https://github.com/hbb1/2d-gaussian-splatting/blob/main/utils/general_utils.py#L163
 def colormap(img, cmap="jet"):
