@@ -1187,14 +1187,14 @@ class Runner:
 
                 # eval the full set
                 if step in [i - 1 for i in cfg.eval_steps]:
-                    self.run_param_distribution_vis(self.comp_sim_splats, 
-                                                    f"{cfg.result_dir}/visualization/comp_sim_step{step}")
+                    # self.run_param_distribution_vis(self.comp_sim_splats, 
+                    #                                 f"{cfg.result_dir}/visualization/comp_sim_step{step}")
                     self.eval(step)
                     self.render_traj(step)
 
                 # run compression
-                # if cfg.compression is not None and step in [i - 1 for i in cfg.eval_steps]:
-                #     self.run_compression(step=step)
+                if cfg.compression is not None and step in [i - 1 for i in cfg.eval_steps]:
+                    self.run_compression(step=step)
 
                 if not cfg.disable_viewer:
                     self.viewer.lock.release()
@@ -1500,7 +1500,7 @@ class Runner:
         self
     ):
         """Save parameters of Gaussian Splats into .ply file"""
-        ply_dir = f"{cfg.result_dir}/ply"
+        ply_dir = f"{self.cfg.result_dir}/ply"
         os.makedirs(ply_dir, exist_ok=True)
         ply_file = ply_dir + "/splats.ply"
         save_ply(self.splats, ply_file)
@@ -1533,6 +1533,8 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
             runner.run_compression(step=step)
     else:
         runner.train()
+    
+    runner.save_params_into_ply_file()
 
     if not cfg.disable_viewer:
         print("Viewer running... Ctrl+C to exit.")

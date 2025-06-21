@@ -21,7 +21,7 @@ import copy
 
 
 @dataclass
-class SeqHevcCompression:
+class SeqHevcCompressionRot:
     """Uses quantization and sorting to compress splats into mp4 files via libx265
       and uses K-means clustering to compress the spherical harmonic coefficents.
 
@@ -67,7 +67,7 @@ class SeqHevcCompression:
             "sh3": 28
         }
     })
-    n_clusters: int = 1024
+    n_clusters: int = 32768
     debug: bool = False
     use_all_intra: bool = False
 
@@ -76,20 +76,20 @@ class SeqHevcCompression:
     compress_fn_map: Dict[str, Callable] = field(default_factory=lambda: {
         "means": _compress_video_hevc_16bit,
         "scales": _compress_video_hevc,
-        "quats": _compress_quats_video_hevc,
+        "quats": _compress_kmeans,
         "opacities": _compress_video_hevc,
         "sh0": _compress_video_hevc,
-        "shN": _compress_shN_video_hevc
-        # "shN": _compress_masked_kmeans,
+        # "shN": _compress_shN_video_hevc
+        "shN": _compress_masked_kmeans,
     })
     decompress_fn_map: Dict[str, Callable] = field(default_factory=lambda: {
         "means": _decompress_video_hevc_16bit,
         "scales": _decompress_video_hevc,
-        "quats": _decompress_quats_video_hevc,
+        "quats": _decompress_kmeans,
         "opacities": _decompress_video_hevc,
         "sh0": _decompress_video_hevc,
-        "shN": _decompress_shN_video_hevc
-        # "shN": _decompress_masked_kmeans,
+        # "shN": _decompress_shN_video_hevc
+        "shN": _decompress_masked_kmeans,
     })
 
     def __post_init__(self, attribute_codec_registry):
@@ -100,12 +100,14 @@ class SeqHevcCompression:
                 "_compress_quats_video_hevc": _compress_quats_video_hevc,
                 "_compress_shN_video_hevc": _compress_shN_video_hevc,
                 "_compress_masked_kmeans": _compress_masked_kmeans,
+                "_compress_kmeans": _compress_kmeans,
 
                 "_decompress_video_hevc_16bit": _decompress_video_hevc_16bit,
                 "_decompress_video_hevc": _decompress_video_hevc,
                 "_decompress_quats_video_hevc": _decompress_quats_video_hevc,
                 "_decompress_shN_video_hevc": _decompress_shN_video_hevc,
                 "_decompress_masked_kmeans": _decompress_masked_kmeans,
+                "_decompress_kmeans": _decompress_kmeans,
             }
 
             for attr_name, attr_codec in attribute_codec_registry.items(): # go through the registry
@@ -152,12 +154,13 @@ class SeqHevcCompression:
             compress_fn = self._get_compress_fn(param_name)
 
             # --- shN 전용 플래트닝 + masked_kmeans 압축 ---
-            if param_name == "shN" and compress_fn.__name__ == "_compress_masked_kmeans":
+            if param_name == "shN" and compress_fn.__name__ in ["_compress_kmeans", "_compress_masked_kmeans"]:
                 # 1) 원본 5D shape 저장
                 orig_shape = list(self.splats_videos["shN"].shape)  # [T, H, W, K, C]
                 # 2) (T*H*W, K, C) 로 flatten
                 flat = self.splats_videos["shN"].reshape(-1, orig_shape[-2], orig_shape[-1])
                 # 3) KMeans 압축 호출
+
                 meta_shN = compress_fn(
                     compress_dir,
                     param_name,
@@ -169,6 +172,20 @@ class SeqHevcCompression:
                 meta_shN["orig_shape"] = orig_shape
                 meta[param_name] = meta_shN
 
+            elif param_name == "quats" and compress_fn.__name__ in ["_compress_kmeans", "_compress_masked_kmeans"]:
+                orig_shape = list(self.splats_videos["quats"].shape)  # [T, H, W, 4]
+                flat = self.splats_videos["quats"].reshape(-1, orig_shape[-1])  # [N, 4]
+
+                meta_quats = compress_fn(
+                    compress_dir,
+                    param_name,
+                    flat,
+                    n_clusters=self.n_clusters,
+                    verbose=self.verbose
+                )
+                meta_quats["orig_shape"] = orig_shape
+                meta[param_name] = meta_quats
+
             # --- 나머지 파라미터들은 기존 방식 ---
             else:
                 kwargs = {
@@ -177,12 +194,15 @@ class SeqHevcCompression:
                     "use_all_intra": self.use_all_intra,
                     "debug": self.debug,
                 }
+                if compress_fn.__name__ in ["_compress_kmeans", "_compress_masked_kmeans"]:
+                    kwargs["quantization"] = kwargs.pop("qp")
+                    kwargs["n_clusters"] = self.n_clusters
+                    kwargs["verbose"] = self.verbose
+
                 meta[param_name] = compress_fn(
-                    compress_dir,
-                    param_name,
-                    self.splats_videos[param_name],
-                    **kwargs
+                    compress_dir, param_name, self.splats_videos[param_name], **kwargs
                 )
+                
         with open(os.path.join(compress_dir, "meta.json"), "w") as f:
             json.dump(meta, f)
 
@@ -210,6 +230,10 @@ class SeqHevcCompression:
                 T, H, W, K, C = param_meta["orig_shape"]
                 splats[param_name] = flat.reshape(T, H, W, K, C)
 
+            elif param_name == "quats" and "orig_shape" in param_meta:
+                flat = decompress_fn(compress_dir, param_name, param_meta)
+                splats[param_name] = flat.reshape(param_meta["orig_shape"])
+                
             # --- 나머지 파라미터들은 기본 복원 ---
             else:
                 splats[param_name] = decompress_fn(compress_dir, param_name, param_meta)
@@ -919,6 +943,114 @@ def _decompress_npz(compress_dir: str, param_name: str, meta: Dict[str, Any]) ->
     params = params.to(dtype=getattr(torch, meta["dtype"]))
     return params
 
+def _compress_kmeans(
+    compress_dir: str,
+    param_name: str,
+    params: Tensor,
+    n_clusters: int = 65536,
+    quantization: int = 8,
+    verbose: bool = True,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Run K-means clustering on parameters and save centroids and labels to a npz file.
+
+    .. warning::
+        TorchPQ must installed to use K-means clustering.
+
+    Args:
+        compress_dir (str): compression directory
+        param_name (str): parameter field name
+        params (Tensor): parameters to compress
+        n_clusters (int): number of K-means clusters
+        quantization (int): number of bits in quantization
+        verbose (bool, optional): Whether to print verbose information. Default to True.
+
+    Returns:
+        Dict[str, Any]: metadata
+    """
+    try:
+        from torchpq.clustering import KMeans
+    except:
+        raise ImportError(
+            "Please install torchpq with 'pip install torchpq' to use K-means clustering"
+        )
+
+    if torch.numel == 0:
+        meta = {
+            "shape": list(params.shape),
+            "dtype": str(params.dtype).split(".")[1],
+        }
+        return meta
+    
+    x = params.reshape(params.shape[0], -1).permute(1, 0).contiguous()
+    if n_clusters > x.shape[0]:
+        if verbose:
+            print(
+                f"Warning: reducing n_clusters from {n_clusters} to {x.shape[0]} due to limited data"
+            )
+        n_clusters = x.shape[0]
+    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
+    labels = kmeans.fit(x)
+    labels = labels.detach().cpu().numpy()
+    centroids = kmeans.centroids.permute(1, 0)
+
+    mins = torch.min(centroids)
+    maxs = torch.max(centroids)
+    centroids_norm = (centroids - mins) / (maxs - mins)
+    centroids_norm = centroids_norm.detach().cpu().numpy()
+    centroids_quant = (
+        (centroids_norm * (2**quantization - 1)).round().astype(np.uint8)
+    )
+    labels = labels.astype(np.uint16)
+
+    npz_dict = {
+        "centroids": centroids_quant,
+        "labels": labels,
+    }
+    np.savez_compressed(os.path.join(compress_dir, f"{param_name}.npz"), **npz_dict)
+    meta = {
+        "shape": list(params.shape),
+        "dtype": str(params.dtype).split(".")[1],
+        "mins": mins.tolist(),
+        "maxs": maxs.tolist(),
+        "quantization": quantization,
+    }
+    return meta
+
+
+def _decompress_kmeans(
+    compress_dir: str, param_name: str, meta: Dict[str, Any], **kwargs
+) -> Tensor:
+    """Decompress parameters from K-means compression.
+
+    Args:
+        compress_dir (str): compression directory
+        param_name (str): parameter field name
+        meta (Dict[str, Any]): metadata
+
+    Returns:
+        Tensor: parameters
+    """
+    if not np.all(meta["shape"]):
+        params = torch.zeros(meta["shape"], dtype=getattr(torch, meta["dtype"]))
+        return meta
+
+    npz_dict = np.load(os.path.join(compress_dir, f"{param_name}.npz"))
+    centroids_quant = npz_dict["centroids"]
+    labels = npz_dict["labels"].astype(np.int32) # uint16 -> int32
+
+    centroids_norm = centroids_quant / (2 ** meta["quantization"] - 1)
+    centroids_norm = torch.tensor(centroids_norm)
+    mins = torch.tensor(meta["mins"])
+    maxs = torch.tensor(meta["maxs"])
+    centroids = centroids_norm * (maxs - mins) + mins
+
+    params = centroids[labels]
+    params = params.reshape(meta["shape"])
+    params = params.to(dtype=getattr(torch, meta["dtype"]))
+    return params
+
+
 def _compress_masked_kmeans(
     compress_dir: str,
     param_name: str,
@@ -968,10 +1100,15 @@ def _compress_masked_kmeans(
     bits.tofile(os.path.join(compress_dir, f"mask.bin"))
 
     # select vaild shN
-    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
-
     masked_params = params[mask]
     x = masked_params.reshape(masked_params.shape[0], -1).permute(1, 0).contiguous()
+    if n_clusters > x.shape[0]:
+        if verbose:
+            print(
+                f"Warning: reducing n_clusters from {n_clusters} to {x.shape[0]} due to limited data"
+            )
+        n_clusters = x.shape[0]
+    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
 
     labels = kmeans.fit(x)
     labels = labels.detach().cpu().numpy()

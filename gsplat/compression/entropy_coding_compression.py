@@ -874,8 +874,14 @@ def _compress_kmeans(
         }
         return meta
     
-    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
     x = params.reshape(params.shape[0], -1).permute(1, 0).contiguous()
+    if n_clusters > x.shape[0]:
+        if verbose:
+            print(
+                f"Warning: reducing n_clusters from {n_clusters} to {x.shape[0]} due to limited data"
+            )
+        n_clusters = x.shape[0]
+    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
     labels = kmeans.fit(x)
     labels = labels.detach().cpu().numpy()
     centroids = kmeans.centroids.permute(1, 0)
@@ -986,10 +992,15 @@ def _compress_masked_kmeans(
     bits.tofile(os.path.join(compress_dir, f"mask.bin"))
 
     # select vaild shN
-    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
-
     masked_params = params[mask]
     x = masked_params.reshape(masked_params.shape[0], -1).permute(1, 0).contiguous()
+    if n_clusters > x.shape[0]:
+        if verbose:
+            print(
+                f"Warning: reducing n_clusters from {n_clusters} to {x.shape[0]} due to limited data"
+            )
+        n_clusters = x.shape[0]
+    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
 
     labels = kmeans.fit(x)
     labels = labels.detach().cpu().numpy()

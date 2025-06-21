@@ -21,7 +21,7 @@ import copy
 
 
 @dataclass
-class SeqHevcCompression:
+class SeqHevcCompressionRGB:
     """Uses quantization and sorting to compress splats into mp4 files via libx265
       and uses K-means clustering to compress the spherical harmonic coefficents.
 
@@ -79,8 +79,8 @@ class SeqHevcCompression:
         "quats": _compress_quats_video_hevc,
         "opacities": _compress_video_hevc,
         "sh0": _compress_video_hevc,
-        "shN": _compress_shN_video_hevc
-        # "shN": _compress_masked_kmeans,
+        # "shN": _compress_shN_video_hevc
+        "shN": _compress_masked_kmeans,
     })
     decompress_fn_map: Dict[str, Callable] = field(default_factory=lambda: {
         "means": _decompress_video_hevc_16bit,
@@ -88,8 +88,8 @@ class SeqHevcCompression:
         "quats": _decompress_quats_video_hevc,
         "opacities": _decompress_video_hevc,
         "sh0": _decompress_video_hevc,
-        "shN": _decompress_shN_video_hevc
-        # "shN": _decompress_masked_kmeans,
+        # "shN": _decompress_shN_video_hevc
+        "shN": _decompress_masked_kmeans,
     })
 
     def __post_init__(self, attribute_codec_registry):
@@ -98,13 +98,13 @@ class SeqHevcCompression:
                 "_compress_video_hevc_16bit": _compress_video_hevc_16bit,
                 "_compress_video_hevc": _compress_video_hevc,
                 "_compress_quats_video_hevc": _compress_quats_video_hevc,
-                "_compress_shN_video_hevc": _compress_shN_video_hevc,
+                # "_compress_shN_video_hevc": _compress_shN_video_hevc,
                 "_compress_masked_kmeans": _compress_masked_kmeans,
 
                 "_decompress_video_hevc_16bit": _decompress_video_hevc_16bit,
                 "_decompress_video_hevc": _decompress_video_hevc,
                 "_decompress_quats_video_hevc": _decompress_quats_video_hevc,
-                "_decompress_shN_video_hevc": _decompress_shN_video_hevc,
+                # "_decompress_shN_video_hevc": _decompress_shN_video_hevc
                 "_decompress_masked_kmeans": _decompress_masked_kmeans,
             }
 
@@ -923,27 +923,13 @@ def _compress_masked_kmeans(
     compress_dir: str,
     param_name: str,
     params: Tensor,
-    n_clusters: int = 32768, # 65536
+    n_clusters: int = 32768,
     quantization: int = 8,
     verbose: bool = True,
     **kwargs,
 ) -> Dict[str, Any]:
     """Run K-means clustering on parameters and save centroids and labels to a npz file.
-
-    .. warning::
-        TorchPQ must installed to use K-means clustering.
-
-    Args:
-        compress_dir (str): compression directory
-        param_name (str): parameter field name
-        params (Tensor): parameters to compress
-        n_clusters (int): number of K-means clusters
-        quantization (int): number of bits in quantization
-        verbose (bool, optional): Whether to print verbose information. Default to True.
-
-    Returns:
-        Dict[str, Any]: metadata
-        
+    RGB 채널을 분리하여 K-means 클러스터링 수행.
     """
     try:
         from torchpq.clustering import KMeans
@@ -968,26 +954,44 @@ def _compress_masked_kmeans(
     bits.tofile(os.path.join(compress_dir, f"mask.bin"))
 
     # select vaild shN
-    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
+    # kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
 
-    masked_params = params[mask]
-    x = masked_params.reshape(masked_params.shape[0], -1).permute(1, 0).contiguous()
+    masked_params = params[mask] # [M, 15, 3]
 
-    labels = kmeans.fit(x)
-    labels = labels.detach().cpu().numpy()
-    centroids = kmeans.centroids.permute(1, 0)
+    # RGB 채널별로 K-means 클러스터링 수행
+    centroids_r, labels_r = _kmeans_channel(masked_params[:, :, 0], n_clusters, verbose)
+    centroids_g, labels_g = _kmeans_channel(masked_params[:, :, 1], n_clusters, verbose)
+    centroids_b, labels_b = _kmeans_channel(masked_params[:, :, 2], n_clusters, verbose)
 
-    mins = torch.min(centroids)
-    maxs = torch.max(centroids)
-    centroids_norm = (centroids - mins) / (maxs - mins)
-    centroids_norm = centroids_norm.detach().cpu().numpy()
-    centroids_quant = (
-        (centroids_norm * (2**quantization - 1)).round().astype(np.uint8)
+    mins = torch.tensor([torch.min(centroids_r), torch.min(centroids_g), torch.min(centroids_b)])
+    maxs = torch.tensor([torch.max(centroids_r), torch.max(centroids_g), torch.max(centroids_b)])
+    
+    # 채널별 centroid를 양자화
+    centroids_norm_r = (centroids_r - mins[0]) / (maxs[0] - mins[0])
+    centroids_norm_g = (centroids_g - mins[1]) / (maxs[1] - mins[1])
+    centroids_norm_b = (centroids_b - mins[2]) / (maxs[2] - mins[2])
+
+    centroids_quant_r = (
+        (centroids_norm_r * (2**quantization - 1)).cpu().numpy().astype(np.uint8)
     )
-    labels = labels.astype(np.uint16)
+    centroids_quant_g = (
+        (centroids_norm_g * (2**quantization - 1)).cpu().numpy().astype(np.uint8)
+    )
+    centroids_quant_b = (
+        (centroids_norm_b * (2**quantization - 1)).cpu().numpy().astype(np.uint8)
+    )
+
+    labels_r = labels_r.astype(np.uint16)
+    labels_g = labels_g.astype(np.uint16)
+    labels_b = labels_b.astype(np.uint16)
+
     npz_dict = {
-        "centroids": centroids_quant,
-        "labels": labels,
+        "centroids_r": centroids_quant_r,
+        "labels_r": labels_r,
+        "centroids_g": centroids_quant_g,
+        "labels_g": labels_g,
+        "centroids_b": centroids_quant_b,
+        "labels_b": labels_b,
     }
     np.savez_compressed(os.path.join(compress_dir, f"{param_name}.npz"), **npz_dict)
     meta = {
@@ -1001,19 +1005,28 @@ def _compress_masked_kmeans(
     }
     return meta
 
+def _kmeans_channel(channel_data: Tensor, n_clusters: int, verbose: bool = True):
+    """개별 채널에 대해 K-means 클러스터링 수행"""
+    try:
+        from torchpq.clustering import KMeans
+    except:
+        raise ImportError(
+            "Please install torchpq with 'pip install torchpq' to use K-means clustering"
+        )
+
+    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
+    x = channel_data.reshape(channel_data.shape[0], -1).permute(1, 0).contiguous()  # [15, M]
+    labels = kmeans.fit(x)
+    labels = labels.detach().cpu().numpy()
+    centroids = kmeans.centroids.permute(1, 0)
+    return centroids, labels
+
 
 def _decompress_masked_kmeans(
     compress_dir: str, param_name: str, meta: Dict[str, Any], **kwargs
 ) -> Tensor:
     """Decompress parameters from K-means compression.
-
-    Args:
-        compress_dir (str): compression directory
-        param_name (str): parameter field name
-        meta (Dict[str, Any]): metadata
-
-    Returns:
-        Tensor: parameters
+    RGB 채널별로 압축된 파라미터를 복원.
     """
     if not np.all(meta["shape"]):
         params = torch.zeros(meta["shape"], dtype=getattr(torch, meta["dtype"]))
@@ -1025,18 +1038,39 @@ def _decompress_masked_kmeans(
     mask = torch.from_numpy(mask_restored).reshape(meta["shape"][0])
 
     npz_dict = np.load(os.path.join(compress_dir, f"{param_name}.npz"))
-    centroids_quant = npz_dict["centroids"]
-    labels = npz_dict["labels"].astype(np.int32) # uint16 -> int32
+    centroids_quant_r = npz_dict["centroids_r"]
+    labels_r = npz_dict["labels_r"].astype(np.int32)
+    centroids_quant_g = npz_dict["centroids_g"]
+    labels_g = npz_dict["labels_g"].astype(np.int32)
+    centroids_quant_b = npz_dict["centroids_b"]
+    labels_b = npz_dict["labels_b"].astype(np.int32)
 
-    centroids_norm = centroids_quant / (2 ** meta["quantization"] - 1)
-    centroids_norm = torch.tensor(centroids_norm)
     mins = torch.tensor(meta["mins"])
     maxs = torch.tensor(meta["maxs"])
-    centroids = centroids_norm * (maxs - mins) + mins
 
-    params = centroids[labels]
-    null_params = torch.zeros(meta["shape"], dtype=params.dtype) # null tensor
-    null_params[mask] = params.reshape([params.shape[0]] + meta["shape"][1:])
+    centroids_norm_r = centroids_quant_r / (2 ** meta["quantization"] - 1)
+    centroids_norm_g = centroids_quant_g / (2 ** meta["quantization"] - 1)
+    centroids_norm_b = centroids_quant_b / (2 ** meta["quantization"] - 1)
+
+    centroids_norm_r = torch.tensor(centroids_norm_r)
+    centroids_norm_g = torch.tensor(centroids_norm_g)
+    centroids_norm_b = torch.tensor(centroids_norm_b)
+
+    centroids_r = centroids_norm_r * (maxs[0] - mins[0]) + mins[0]
+    centroids_g = centroids_norm_g * (maxs[1] - mins[1]) + mins[1]
+    centroids_b = centroids_norm_b * (maxs[2] - mins[2]) + mins[2]
+
+    params_r = centroids_r[labels_r]
+    params_g = centroids_g[labels_g]
+    params_b = centroids_b[labels_b]
+
+    null_params = torch.zeros(meta["shape"], dtype=getattr(torch, meta["dtype"]))
+    masked_params = torch.zeros((mask.sum(), meta["shape"][1], 3), dtype=getattr(torch, meta["dtype"]))
+    masked_params[:, :, 0] = params_r
+    masked_params[:, :, 1] = params_g
+    masked_params[:, :, 2] = params_b
+
+    null_params[mask] = masked_params
     params = null_params
     params = params.to(dtype=getattr(torch, meta["dtype"]))
     return params

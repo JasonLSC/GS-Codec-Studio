@@ -4,7 +4,7 @@ echo "PRUNE_SPLATS is set to: $PRUNE_SPLATS"
 
 # Datadir and dataset
 SCENE_DIR="data/GSC"
-SCENE_LIST="CBA" # CBA Bartender
+SCENE_LIST="Bartender" # CBA Bartender
 
 declare -A TEST_VIEWS
 TEST_VIEWS=(
@@ -18,7 +18,7 @@ START_FRAMES=(
     ["Bartender"]=50
 )
 
-RESULT_DIR="results/dyngs"
+RESULT_DIR="results/dyngs_2"
 NUM_FRAME=65
 
 run_single_scene() {
@@ -48,7 +48,7 @@ run_single_scene() {
     eval "$CMD"
 }
 
-GPU_LIST=(7)
+GPU_LIST=(0)
 GPU_COUNT=${#GPU_LIST[@]}
 
 SCENE_IDX=-1

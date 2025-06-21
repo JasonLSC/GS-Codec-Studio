@@ -3,3 +3,10 @@ from .entropy_coding_compression import EntropyCodingCompression
 from .hevc_compression import HevcCompression
 from .stg_compression import STGPngCompression
 from .seq_hevc_compression import SeqHevcCompression
+from .seq_hevc_compression_rgb import SeqHevcCompressionRGB
+from .seq_hevc_compression_rot import SeqHevcCompressionRot
+from .seq_hevc_compression_combined import SeqHevcCompressionCom
+from .seq_hevc_compression_full import SeqHevcCompressionFull
+from .seq_hevc_compression_full_sort import SeqHevcCompressionFullSort
+from .seq_hevc_compression_full_rect import SeqHevcCompressionFullRect
+from .seq_hevc_compression_full_sort_rect import SeqHevcCompressionFullSortRect

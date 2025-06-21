@@ -18,10 +18,11 @@ from gsplat.compression.outlier_filter import filter_splats
 from gsplat.compression.sort import sort_splats
 from gsplat.utils import inverse_log_transform, log_transform
 import copy
+import math
 
 
 @dataclass
-class SeqHevcCompression:
+class SeqHevcCompressionCom:
     """Uses quantization and sorting to compress splats into mp4 files via libx265
       and uses K-means clustering to compress the spherical harmonic coefficents.
 
@@ -76,20 +77,20 @@ class SeqHevcCompression:
     compress_fn_map: Dict[str, Callable] = field(default_factory=lambda: {
         "means": _compress_video_hevc_16bit,
         "scales": _compress_video_hevc,
-        "quats": _compress_quats_video_hevc,
+        "quats": _skip_compression,
         "opacities": _compress_video_hevc,
         "sh0": _compress_video_hevc,
-        "shN": _compress_shN_video_hevc
-        # "shN": _compress_masked_kmeans,
+        # "shN": _compress_shN_video_hevc
+        "shN": _compress_combined_kmeans,
     })
     decompress_fn_map: Dict[str, Callable] = field(default_factory=lambda: {
         "means": _decompress_video_hevc_16bit,
         "scales": _decompress_video_hevc,
-        "quats": _decompress_quats_video_hevc,
+        "quats": _skip_decompression,
         "opacities": _decompress_video_hevc,
         "sh0": _decompress_video_hevc,
-        "shN": _decompress_shN_video_hevc
-        # "shN": _decompress_masked_kmeans,
+        # "shN": _decompress_shN_video_hevc
+        "shN": _decompress_combined_kmeans,
     })
 
     def __post_init__(self, attribute_codec_registry):
@@ -100,12 +101,18 @@ class SeqHevcCompression:
                 "_compress_quats_video_hevc": _compress_quats_video_hevc,
                 "_compress_shN_video_hevc": _compress_shN_video_hevc,
                 "_compress_masked_kmeans": _compress_masked_kmeans,
+                "_compress_kmeans": _compress_kmeans,
+                "_compress_combined_kmeans": _compress_combined_kmeans,
+                "_skip_compression": _skip_compression,
 
                 "_decompress_video_hevc_16bit": _decompress_video_hevc_16bit,
                 "_decompress_video_hevc": _decompress_video_hevc,
                 "_decompress_quats_video_hevc": _decompress_quats_video_hevc,
                 "_decompress_shN_video_hevc": _decompress_shN_video_hevc,
                 "_decompress_masked_kmeans": _decompress_masked_kmeans,
+                "_decompress_kmeans": _decompress_kmeans,
+                "_decompress_combined_kmeans": _decompress_combined_kmeans,
+                "_skip_decompression": _skip_decompression,
             }
 
             for attr_name, attr_codec in attribute_codec_registry.items(): # go through the registry
@@ -134,87 +141,78 @@ class SeqHevcCompression:
         else:
             return _decompress_npz
     
-    def compress(self, compress_dir: str) -> None:
-        """Run compression
+    def compress(self, compress_dir: str) -> None:  
+        # 1) normalize quats  
+        self.splats_videos["quats"] = F.normalize(self.splats_videos["quats"], dim=-1)  
 
-        Args:
-            compress_dir (str): directory to save compressed files
-        """
+        meta = {}  
 
-        # Param-specific preprocessing
-        # splats["means"] = log_transform(splats["means"])
-        self.splats_videos["quats"] = F.normalize(self.splats_videos["quats"], dim=-1)
+        for name, tensor in self.splats_videos.items():  
 
-        # ignore_keys = {k for k in self.splats_videos if k.startswith("shift")}  # <<<< 무시할 키 추가!
+            fn = self._get_compress_fn(name)  
 
-        meta = {}
-        for param_name in self.splats_videos.keys():
-            compress_fn = self._get_compress_fn(param_name)
+            if name == "shN":  
+                # ────────────────────────────────────────  
+                # a) 원본 5D shape 기록  
+                orig_shape_shN   = list(tensor.shape)                    # [T, H, W, 15, 3]  
+                orig_shape_quats = list(self.splats_videos["quats"].shape)  # [T, H, W, 4]  
 
-            # --- shN 전용 플래트닝 + masked_kmeans 압축 ---
-            if param_name == "shN" and compress_fn.__name__ == "_compress_masked_kmeans":
-                # 1) 원본 5D shape 저장
-                orig_shape = list(self.splats_videos["shN"].shape)  # [T, H, W, K, C]
-                # 2) (T*H*W, K, C) 로 flatten
-                flat = self.splats_videos["shN"].reshape(-1, orig_shape[-2], orig_shape[-1])
-                # 3) KMeans 압축 호출
-                meta_shN = compress_fn(
-                    compress_dir,
-                    param_name,
-                    flat,
-                    n_clusters=self.n_clusters,
-                    verbose=self.verbose
-                )
-                # 4) 나중에 복원할 수 있도록 원래 shape 기록
-                meta_shN["orig_shape"] = orig_shape
-                meta[param_name] = meta_shN
+                # b) flatten  
+                shN_flat   = tensor.reshape(-1, orig_shape_shN[-2], orig_shape_shN[-1])    # [N,15,3]  
+                quats_flat = self.splats_videos["quats"].reshape(-1, orig_shape_quats[-1])  # [N,4]  
 
-            # --- 나머지 파라미터들은 기존 방식 ---
-            else:
-                kwargs = {
-                    "n_sidelen": int(self.splats_videos["means"].size(1)),
-                    "qp": self.qp[param_name],
-                    "use_all_intra": self.use_all_intra,
-                    "debug": self.debug,
-                }
-                meta[param_name] = compress_fn(
-                    compress_dir,
-                    param_name,
-                    self.splats_videos[param_name],
-                    **kwargs
-                )
-        with open(os.path.join(compress_dir, "meta.json"), "w") as f:
-            json.dump(meta, f)
+                # c) joint kmeans 호출  
+                info = fn(  
+                    compress_dir,  
+                    name,  
+                    shN=shN_flat,  
+                    quats=quats_flat,  
+                    n_clusters=self.n_clusters,  
+                    verbose=self.verbose,  
+                    save_analysis_data=self.save_analysis_data  # 추가: 분석 데이터 저장 여부 전달  
+                )  
+
+                # d) **원본** shape 으로 덮어쓰기  
+                info["shape_shN"]   = orig_shape_shN  
+                info["shape_quats"] = orig_shape_quats  
+
+                meta[name] = info  
+                # ────────────────────────────────────────  
+
+            elif name == "quats":  
+                # joint clustering 에 포함됐으니까 skip  
+                fn(compress_dir, name, None)  
+
+            else:  
+                # 나머지 파라미터들 (means, scales, sh0, opacities 등)  
+                meta[name] = fn(  
+                    compress_dir,  
+                    name,  
+                    tensor,  
+                    n_sidelen=int(self.splats_videos["means"].size(1)),  
+                    qp=self.qp.get(name, 0),  
+                    debug=self.debug,  
+                    use_all_intra=self.use_all_intra  
+                )  
+
+        # meta.json 쓰기  
+        with open(os.path.join(compress_dir, "meta.json"), "w") as f:  
+            json.dump(meta, f)  
 
     def decompress(self, compress_dir: str) -> Dict[str, Tensor]:
-        """Run decompression
-
-        Args:
-            compress_dir (str): directory that contains compressed files
-
-        Returns:
-            Dict[str, Tensor]: decompressed Gaussian splats
-        """
-        with open(os.path.join(compress_dir, "meta.json"), "r") as f:
-            meta = json.load(f)
-
-        splats = {}
-        for param_name, param_meta in meta.items():
-            decompress_fn = self._get_decompress_fn(param_name)
-
-            # --- shN 전용: flat → 5D 복원 ---
-            if param_name == "shN" and "orig_shape" in param_meta:
-                # 1) flat 텐서 복원 (shape: [N_flat, K, C])
-                flat = decompress_fn(compress_dir, param_name, param_meta)
-                # 2) 원본 shape으로 reshape
-                T, H, W, K, C = param_meta["orig_shape"]
-                splats[param_name] = flat.reshape(T, H, W, K, C)
-
-            # --- 나머지 파라미터들은 기본 복원 ---
+        meta = json.load(open(os.path.join(compress_dir, "meta.json")))
+        out = {}
+        for name, m in meta.items():
+            fn = self._get_decompress_fn(name)
+            if name == "shN":
+                shN, qu = fn(compress_dir, name, m)
+                out["shN"] = shN
+                out["quats"] = qu
+            elif name == "quats":
+                fn(compress_dir, name, m)
             else:
-                splats[param_name] = decompress_fn(compress_dir, param_name, param_meta)
-        return splats
-
+                out[name] = fn(compress_dir, name, m)
+        return out
     
     def sort_with_frame_index(self, splats_list: List[Dict], frame_id: int = 0) -> Tensor:
         """Organize the list of splats into several sequences of attributs
@@ -363,136 +361,6 @@ class SeqHevcCompression:
         
         return splats_list
     
-    def shift_sh_coefficients(self, splats: Dict[str, torch.Tensor]) -> None:
-        shift_info = {}
-
-        for attr_name in ("sh0", "shN"):
-            if attr_name not in splats:
-                continue
-            
-            tensor = splats[attr_name]  # [N, K, C]
-            if tensor.dim() == 2:
-                tensor = tensor.unsqueeze(1)  # [N, 1, C]
-
-            N, K, C = tensor.shape
-            tensor_rolled = []
-            shifts_all = []
-
-            for c in range(C):
-                channel_tensor = tensor[:, :, c]  # [N, K]
-                abs_channel_tensor = channel_tensor.abs()
-
-                max_indices = torch.argmax(abs_channel_tensor, dim=-1)  # [N]
-                shifts_all.append(max_indices)
-
-                rolled_channel = torch.stack([
-                    torch.roll(channel_tensor[i], -max_indices[i].item(), dims=0)
-                    for i in range(N)
-                ], dim=0)  # [N, K]
-
-                tensor_rolled.append(rolled_channel.unsqueeze(-1))
-
-            shifted_tensor = torch.cat(tensor_rolled, dim=-1)  # [N, K, C]
-            splats[attr_name] = shifted_tensor
-
-            shift_info[attr_name] = torch.stack(shifts_all, dim=-1).float()  # [N, C]
-            
-
-        # shift 정보를 저장
-        if "sh0" in shift_info:
-            splats["shift_sh0"] = shift_info["sh0"]
-        if "shN" in shift_info:
-            splats["shift_shN"] = shift_info["shN"]
-
-    def inverse_shift_sh_coefficients(self, splats: Dict[str, torch.Tensor]) -> None:
-        for attr_name in ("sh0", "shN"):
-            shift_key = f"shift_{attr_name}"
-            if attr_name not in splats or shift_key not in splats:
-                continue
-
-            tensor = splats[attr_name]  # [N, K, C]
-            shifts = splats[shift_key].long()  # [N, C]
-
-            N, K, C = tensor.shape
-            restored = []
-
-            for c in range(C):
-                channel_tensor = tensor[:, :, c]  # [N, K]
-                restored_channel = torch.stack([
-                    torch.roll(channel_tensor[i], shifts[i, c].item(), dims=0)
-                    for i in range(N)
-                ], dim=0)
-                restored.append(restored_channel.unsqueeze(-1))
-
-            restored_tensor = torch.cat(restored, dim=-1)  # [N, K, C]
-            splats[attr_name] = restored_tensor.float()
-
-
-    def shift_scales(self, splats: Dict[str, torch.Tensor]) -> None:
-        if "scales" not in splats:
-            return
-
-        scales = splats["scales"]  # [N, 3]
-        N = scales.shape[0]
-
-        # RGB 기준으로 가장 큰 값이 앞으로 오도록 roll
-        max_indices = torch.argmax(scales.abs(), dim=1)  # [N]
-        shifted_scales = torch.stack([
-            torch.roll(scales[i], -max_indices[i].item(), dims=0) for i in range(N)
-        ], dim=0)  # [N, 3]
-
-        splats["scales"] = shifted_scales
-        splats["shift_scales"] = max_indices.float()  # float으로 저장
-
-
-
-    def inverse_shift_scales(self, splats: Dict[str, torch.Tensor]) -> None:
-        if "scales" not in splats or "shift_scales" not in splats:
-            return
-
-        scales = splats["scales"]
-        shifts = splats["shift_scales"].long()
-        N = scales.shape[0]
-
-        restored_scales = torch.stack([
-            torch.roll(scales[i], shifts[i].item(), dims=0) for i in range(N)
-        ], dim=0)
-
-        splats["scales"] = restored_scales.float()
-
-
-    
-    def shift_quats(self, splats: Dict[str, torch.Tensor]) -> None:
-        if "quats" not in splats:
-            return
-
-        quats = splats["quats"]  # [N, 4]
-        N = quats.shape[0]
-
-        max_indices = torch.argmax(quats.abs(), dim=1)
-        shifted_quats = torch.stack([
-            torch.roll(quats[i], -max_indices[i].item(), dims=0) for i in range(N)
-        ], dim=0)
-
-        splats["quats"] = shifted_quats
-        splats["shift_quats"] = max_indices.float()
-
-
-    
-    def inverse_shift_quats(self, splats: Dict[str, torch.Tensor]) -> None:
-        if "quats" not in splats or "shift_quats" not in splats:
-            print("No quats or shift_quats found in splats.")
-            return
-
-        quats = splats["quats"]  # [N, 4]
-        shifts = splats["shift_quats"].long()  # [N]
-
-        N = quats.shape[0]
-        restored_quats = torch.stack([
-            torch.roll(quats[i], shifts[i].item(), dims=0) for i in range(N)
-        ], dim=0)
-
-        splats["quats"] = restored_quats.float()
 
     def compute_stats(self, tensor: torch.Tensor, name: str = "param") -> Dict[str, Any]:
         """
@@ -919,6 +787,114 @@ def _decompress_npz(compress_dir: str, param_name: str, meta: Dict[str, Any]) ->
     params = params.to(dtype=getattr(torch, meta["dtype"]))
     return params
 
+def _compress_kmeans(
+    compress_dir: str,
+    param_name: str,
+    params: Tensor,
+    n_clusters: int = 65536,
+    quantization: int = 8,
+    verbose: bool = True,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Run K-means clustering on parameters and save centroids and labels to a npz file.
+
+    .. warning::
+        TorchPQ must installed to use K-means clustering.
+
+    Args:
+        compress_dir (str): compression directory
+        param_name (str): parameter field name
+        params (Tensor): parameters to compress
+        n_clusters (int): number of K-means clusters
+        quantization (int): number of bits in quantization
+        verbose (bool, optional): Whether to print verbose information. Default to True.
+
+    Returns:
+        Dict[str, Any]: metadata
+    """
+    try:
+        from torchpq.clustering import KMeans
+    except:
+        raise ImportError(
+            "Please install torchpq with 'pip install torchpq' to use K-means clustering"
+        )
+
+    if torch.numel == 0:
+        meta = {
+            "shape": list(params.shape),
+            "dtype": str(params.dtype).split(".")[1],
+        }
+        return meta
+    
+    x = params.reshape(params.shape[0], -1).permute(1, 0).contiguous()
+    if n_clusters > x.shape[0]:
+        if verbose:
+            print(
+                f"Warning: reducing n_clusters from {n_clusters} to {x.shape[0]} due to limited data"
+            )
+        n_clusters = x.shape[0]
+    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
+    labels = kmeans.fit(x)
+    labels = labels.detach().cpu().numpy()
+    centroids = kmeans.centroids.permute(1, 0)
+
+    mins = torch.min(centroids)
+    maxs = torch.max(centroids)
+    centroids_norm = (centroids - mins) / (maxs - mins)
+    centroids_norm = centroids_norm.detach().cpu().numpy()
+    centroids_quant = (
+        (centroids_norm * (2**quantization - 1)).round().astype(np.uint8)
+    )
+    labels = labels.astype(np.uint16)
+
+    npz_dict = {
+        "centroids": centroids_quant,
+        "labels": labels,
+    }
+    np.savez_compressed(os.path.join(compress_dir, f"{param_name}.npz"), **npz_dict)
+    meta = {
+        "shape": list(params.shape),
+        "dtype": str(params.dtype).split(".")[1],
+        "mins": mins.tolist(),
+        "maxs": maxs.tolist(),
+        "quantization": quantization,
+    }
+    return meta
+
+
+def _decompress_kmeans(
+    compress_dir: str, param_name: str, meta: Dict[str, Any], **kwargs
+) -> Tensor:
+    """Decompress parameters from K-means compression.
+
+    Args:
+        compress_dir (str): compression directory
+        param_name (str): parameter field name
+        meta (Dict[str, Any]): metadata
+
+    Returns:
+        Tensor: parameters
+    """
+    if not np.all(meta["shape"]):
+        params = torch.zeros(meta["shape"], dtype=getattr(torch, meta["dtype"]))
+        return meta
+
+    npz_dict = np.load(os.path.join(compress_dir, f"{param_name}.npz"))
+    centroids_quant = npz_dict["centroids"]
+    labels = npz_dict["labels"].astype(np.int32) # uint16 -> int32
+
+    centroids_norm = centroids_quant / (2 ** meta["quantization"] - 1)
+    centroids_norm = torch.tensor(centroids_norm)
+    mins = torch.tensor(meta["mins"])
+    maxs = torch.tensor(meta["maxs"])
+    centroids = centroids_norm * (maxs - mins) + mins
+
+    params = centroids[labels]
+    params = params.reshape(meta["shape"])
+    params = params.to(dtype=getattr(torch, meta["dtype"]))
+    return params
+
+
 def _compress_masked_kmeans(
     compress_dir: str,
     param_name: str,
@@ -968,10 +944,15 @@ def _compress_masked_kmeans(
     bits.tofile(os.path.join(compress_dir, f"mask.bin"))
 
     # select vaild shN
-    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
-
     masked_params = params[mask]
     x = masked_params.reshape(masked_params.shape[0], -1).permute(1, 0).contiguous()
+    if n_clusters > x.shape[0]:
+        if verbose:
+            print(
+                f"Warning: reducing n_clusters from {n_clusters} to {x.shape[0]} due to limited data"
+            )
+        n_clusters = x.shape[0]
+    kmeans = KMeans(n_clusters=n_clusters, distance="manhattan", verbose=verbose)
 
     labels = kmeans.fit(x)
     labels = labels.detach().cpu().numpy()
@@ -1040,3 +1021,145 @@ def _decompress_masked_kmeans(
     params = null_params
     params = params.to(dtype=getattr(torch, meta["dtype"]))
     return params
+
+def _compress_combined_kmeans(compress_dir, param_name, shN: Tensor, quats: Tensor,
+                              n_clusters: int = 1024, quantization: int = 8, verbose: bool = True, **kwargs):
+    # 1) 마스크 생성 - 유효한 데이터만 처리
+    mask = (shN > 0).any(dim=1).any(dim=1)  # [N]
+    masked_shN = shN[mask]                  # [M,15,3]
+    masked_quats = quats[mask]              # [M,4]
+    
+    # 2) 쿼터니언 정규화 (중요)
+    masked_quats = F.normalize(masked_quats, dim=-1)
+    
+    # 3) SH와 쿼터니언을 별도로 정규화 (다른 스케일의 데이터이므로)
+    x_sh = masked_shN.reshape(masked_shN.shape[0], -1)  # [M,45]
+    x_q = masked_quats                                  # [M,4]
+    
+    # 각 데이터 타입의 범위 계산
+    sh_mins = torch.min(x_sh, dim=0)[0]
+    sh_maxs = torch.max(x_sh, dim=0)[0]
+    q_mins = torch.min(x_q, dim=0)[0]
+    q_maxs = torch.max(x_q, dim=0)[0]
+    
+    # 정규화
+    sh_range = sh_maxs - sh_mins
+    sh_range[sh_range == 0] = 1.0  # 0으로 나누기 방지
+    x_sh_norm = (x_sh - sh_mins) / sh_range
+    
+    q_range = q_maxs - q_mins
+    q_range[q_range == 0] = 1.0  # 0으로 나누기 방지
+    x_q_norm = (x_q - q_mins) / q_range
+    
+    # 결합
+    x = torch.cat([x_sh_norm, x_q_norm], dim=1)  # [M,49]
+    
+    # 4) K-means 클러스터링
+    from torchpq.clustering import KMeans
+    x_input = x.permute(1,0).contiguous()  # [49,M]
+    kmeans = KMeans(n_clusters=n_clusters, distance="euclidean", verbose=verbose)
+    labels = kmeans.fit(x_input).cpu().detach().numpy()
+    centroids = kmeans.centroids.permute(1,0).cpu().detach().numpy()  # [K,49]
+    
+    # 5) 결과 저장
+    np.savez_compressed(
+        os.path.join(compress_dir, f"{param_name}.npz"),
+        centroids=centroids.astype(np.float32),
+        labels=labels.astype(np.uint16),
+        sh_mins=sh_mins.cpu().detach().numpy(),
+        sh_maxs=sh_maxs.cpu().detach().numpy(),
+        q_mins=q_mins.cpu().detach().numpy(),
+        q_maxs=q_maxs.cpu().detach().numpy()
+    )
+    
+    # 6) 마스크 저장 (정확한 바이트 계산)
+    mask_flat = mask.cpu().detach().numpy().astype(bool)
+    mask_length = len(mask_flat)
+    n_bytes = (mask_length + 7) // 8
+    bits = np.packbits(mask_flat)[:n_bytes]
+    bits.tofile(os.path.join(compress_dir, "mask.bin"))
+    
+    if verbose:
+        print(f"Combined compression - SH+Quats: {n_clusters} clusters, {mask.sum().item()} valid elements")
+    
+    return {
+        "shape_shN": list(shN.shape),
+        "shape_quats": list(quats.shape),
+        "mask_bits": int(mask.sum().item()),
+        "mask_length": mask_length,
+        "dtype": str(shN.dtype).split(".")[1],
+    }
+
+
+def _decompress_combined_kmeans(compress_dir, param_name, meta, **kwargs):
+    # 1) 원본 형태 복원
+    orig_shN = meta["shape_shN"]      # [T, H, W, 15, 3]
+    orig_quats = meta["shape_quats"]  # [T, H, W, 4]
+    dtype = getattr(torch, meta["dtype"])
+    
+    # 2) 플랫 길이 계산
+    T, H, W, _, _ = orig_shN
+    N_flat = T * H * W
+    
+    # 3) 마스크 복원
+    mask_bytes = np.fromfile(os.path.join(compress_dir, "mask.bin"), dtype=np.uint8)
+    mask_length = meta.get("mask_length", N_flat)  # 이전 버전 호환성
+    mask_flat = np.unpackbits(mask_bytes)[:mask_length].astype(bool)
+    
+    # 유효성 검사
+    if mask_flat.sum() != meta["mask_bits"]:
+        print(f"Warning: Mask bit count mismatch: unpacked {mask_flat.sum()} != stored {meta['mask_bits']}")
+    
+    # 4) 압축 데이터 로드
+    d = np.load(os.path.join(compress_dir, f"{param_name}.npz"))
+    centroids = d["centroids"]     # [K,49]
+    labels = d["labels"]           # [M]
+    sh_mins = torch.from_numpy(d["sh_mins"])
+    sh_maxs = torch.from_numpy(d["sh_maxs"])
+    q_mins = torch.from_numpy(d["q_mins"])
+    q_maxs = torch.from_numpy(d["q_maxs"])
+    
+    # 5) 코드북 탐색
+    values = centroids[labels]     # [M,49]
+    
+    # 6) SH와 쿼터니언 분리
+    sh_norm = values[:, :45]       # [M,45]
+    q_norm = values[:, 45:]        # [M,4]
+    
+    # 역정규화
+    sh_range = sh_maxs - sh_mins
+    sh_range[sh_range == 0] = 1.0
+    sh_vals = sh_norm * sh_range.numpy() + sh_mins.numpy()
+    
+    q_range = q_maxs - q_mins
+    q_range[q_range == 0] = 1.0
+    q_vals = q_norm * q_range.numpy() + q_mins.numpy()
+    
+    # 원래 형태로 복원
+    shN_vals = sh_vals.reshape(-1, orig_shN[-2], orig_shN[-1])  # [M,15,3]
+    
+    # 7) 제로 배열에 값 배치
+    shN_flat = np.zeros((N_flat, orig_shN[-2], orig_shN[-1]), dtype=np.float32)
+    quat_flat = np.zeros((N_flat, orig_quats[-1]), dtype=np.float32)
+    shN_flat[mask_flat] = shN_vals
+    quat_flat[mask_flat] = q_vals
+    
+    # 8) 원래 차원으로 재구성
+    shN_full = shN_flat.reshape(orig_shN)      # [T,H,W,15,3]
+    quat_full = quat_flat.reshape(orig_quats)  # [T,H,W,4]
+    
+    # 9) 쿼터니언 정규화 (가장 중요!)
+    quat_tensor = torch.tensor(quat_full, dtype=dtype)
+    quat_tensor = F.normalize(quat_tensor, dim=-1)
+    
+    return torch.tensor(shN_full, dtype=dtype), quat_tensor
+
+
+def _skip_compression(compress_dir, attribute_name, array, **kwargs):
+    # joint compression handles quats inside shN
+    print(f"[Info] Skipping compression for '{attribute_name}', included in combined kmeans.")
+    return None
+
+def _skip_decompression(compress_dir, attribute_name, meta, **kwargs):
+    print(f"[Info] Skipping decompression for '{attribute_name}', included in combined kmeans.")
+    return None

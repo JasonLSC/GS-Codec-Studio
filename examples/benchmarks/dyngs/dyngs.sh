@@ -15,7 +15,7 @@ START_FRAMES=(
     ["Cinema"]=235
 )
 
-RESULT_DIR="results/dyngs"
+RESULT_DIR="results/dyngs_2"
 
 NUM_FRAME=65
 
@@ -28,13 +28,33 @@ run_single_scene() {
     echo "Running $SCENE START_FRAME @ ${START_FRAME}"
 
     # execute training 
-    CUDA_VISIBLE_DEVICES=$GPU_ID python simple_trainer_dyngs.py compression_sim \
+    # CUDA_VISIBLE_DEVICES=$GPU_ID python simple_trainer_dyngs.py compression_sim \
+    #     --model_path $RESULT_DIR/$SCENE/ \
+    #     --data_dir $SCENE_DIR/$SCENE/colmap/colmap_${START_FRAME} \
+    #     --result_dir $RESULT_DIR/$SCENE/ \
+    #     --downscale_factor 1 \
+    #     --duration $NUM_FRAME \
+    #     --batch_size 1 \
+    #     --max_steps 50_000 \
+    #     --refine_start_iter 1_500 \
+    #     --refine_stop_iter 45_000 \
+    #     --refine_every 100 \
+    #     --reset_every 5_000 \
+    #     --pause_refine_after_reset 2_000 \
+    #     --strategy Modified_STG_Strategy \
+    #     --test_view_id $TEST_VIEW_IDS \
+    #     --feature_dim None
+    
+    # execute evaluation and compression 
+    CUDA_VISIBLE_DEVICES=$GPU_ID python simple_trainer_dyngs.py default \
         --model_path $RESULT_DIR/$SCENE/ \
         --data_dir $SCENE_DIR/$SCENE/colmap/colmap_${START_FRAME} \
         --result_dir $RESULT_DIR/$SCENE/ \
         --downscale_factor 1 \
+        --batch_size 1 \
         --duration $NUM_FRAME \
-        --batch_size 2 \
+        --lpips_net vgg \
+        --compression stg \
         --max_steps 50_000 \
         --refine_start_iter 1_500 \
         --refine_stop_iter 45_000 \
@@ -43,18 +63,7 @@ run_single_scene() {
         --pause_refine_after_reset 2_000 \
         --strategy Modified_STG_Strategy \
         --test_view_id $TEST_VIEW_IDS 
-    
-    # execute evaluation and compression 
-    CUDA_VISIBLE_DEVICES=$GPU_ID python simple_trainer_dyngs.py default \
-        --model_path $RESULT_DIR/$SCENE/ \
-        --data_dir $SCENE_DIR/$SCENE/colmap/colmap_${START_FRAME} \
-        --result_dir $RESULT_DIR/$SCENE/ \
-        --downscale_factor 1 \
-        --duration $NUM_FRAME \
-        --lpips_net vgg \
-        --compression stg \
-        --ckpt $RESULT_DIR/$SCENE/ckpts/ckpt_best_rank0.pt \
-        --test_view_id $TEST_VIEW_IDS 
+        # --ckpt $RESULT_DIR/$SCENE/ckpts/ckpt_best_rank0.pt \
 }
 
 GPU_LIST=(0)

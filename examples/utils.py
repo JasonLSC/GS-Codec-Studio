@@ -226,62 +226,77 @@ def apply_depth_colormap(
 
 
 def load_ply(path: str) -> torch.nn.ParameterDict:
-    # Read PLY file
+    from plyfile import PlyData
+    import torch
+    import numpy as np
+
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
-    
-    # Get total number of vertices
+
     n_vertices = vertices.count
 
-    # Extract basic attributes (positions)
     means = np.stack((vertices['x'], vertices['y'], vertices['z']), axis=1)
-    
-    # Calculate dimensions for sh0 and shN
+
     sh0_size = len([prop for prop in vertices.properties if prop.name.startswith('f_dc_')])
     shN_size = len([prop for prop in vertices.properties if prop.name.startswith('f_rest_')])
-    
-    # Extract sh0 data
+
     sh0_data = np.zeros((n_vertices, sh0_size))
     for i in range(sh0_size):
         sh0_data[:, i] = vertices[f'f_dc_{i}']
-    
-    # Extract shN data
+
     shN_data = np.zeros((n_vertices, shN_size))
     for i in range(shN_size):
         shN_data[:, i] = vertices[f'f_rest_{i}']
-    
-    # Extract opacity data
+
     opacities = vertices['opacity'].reshape(-1, 1)
-    
-    # Extract scales data
+
     scale_size = len([prop for prop in vertices.properties if prop.name.startswith('scale_')])
     scales = np.zeros((n_vertices, scale_size))
     for i in range(scale_size):
         scales[:, i] = vertices[f'scale_{i}']
-    
-    # Extract quaternion data
+
     quat_size = len([prop for prop in vertices.properties if prop.name.startswith('rot_')])
     quats = np.zeros((n_vertices, quat_size))
     for i in range(quat_size):
         quats[:, i] = vertices[f'rot_{i}']
-    
-    # Reshape sh0 and shN to original dimensions
-    sh0_dim2 = 3  # Assume 3, adjust based on actual data
-    sh0_dim1 = sh0_size // sh0_dim2
-    shN_dim2 = 3  # Assume 3, adjust based on actual data
-    shN_dim1 = shN_size // shN_dim2
-    
-    sh0_data = sh0_data.reshape(-1, sh0_dim2, sh0_dim1).transpose(0, 2, 1)
-    shN_data = shN_data.reshape(-1, shN_dim2, shN_dim1).transpose(0, 2, 1)
-    
-    # Convert to torch tensors and create ParameterDict
+
+    ## 추가로 shift_sh0, shift_shN도 읽자
+    if 'shift_sh0' in vertices.data.dtype.names:
+        shift_sh0 = np.array(vertices.data['shift_sh0']).reshape(-1, 1)
+    else:
+        shift_sh0 = np.zeros((n_vertices, 1), dtype=np.float32)
+
+    if 'shift_shN' in vertices.data.dtype.names:
+        shift_shN = np.array(vertices.data['shift_shN']).reshape(-1, 1)
+    else:
+        shift_shN = np.zeros((n_vertices, 1), dtype=np.float32)
+    # === shift_scale 필드 로딩 ===
+    if 'shift_scales' in vertices.data.dtype.names:
+        shift_scale = np.array(vertices.data['shift_scales']).reshape(-1, 1)
+    else:
+        shift_scale = np.zeros((n_vertices, 1), dtype=np.float32)
+    # === shift_quat 필드 로딩 ===
+    if 'shift_quats' in vertices.data.dtype.names:
+        shift_quat = np.array(vertices.data['shift_quats']).reshape(-1, 1)
+    else:
+        shift_quat = np.zeros((n_vertices, 1), dtype=np.float32)
+
+
+    ## reshape
+    sh0_data = sh0_data.reshape(-1, 3, sh0_size // 3).transpose(0, 2, 1)
+    shN_data = shN_data.reshape(-1, 3, shN_size // 3).transpose(0, 2, 1)
+
     splats = torch.nn.ParameterDict({
         "means": torch.nn.Parameter(torch.from_numpy(means.astype(np.float32))),
         "sh0": torch.nn.Parameter(torch.from_numpy(sh0_data.astype(np.float32))),
         "shN": torch.nn.Parameter(torch.from_numpy(shN_data.astype(np.float32))),
         "opacities": torch.nn.Parameter(torch.from_numpy(opacities.astype(np.float32)).squeeze(1)),
         "scales": torch.nn.Parameter(torch.from_numpy(scales.astype(np.float32))),
-        "quats": torch.nn.Parameter(torch.from_numpy(quats.astype(np.float32)))
+        "quats": torch.nn.Parameter(torch.from_numpy(quats.astype(np.float32))),
+        "shift_sh0": torch.nn.Parameter(torch.from_numpy(shift_sh0.astype(np.float32)).squeeze(1)),
+        "shift_shN": torch.nn.Parameter(torch.from_numpy(shift_shN.astype(np.float32)).squeeze(1)),
+        "shift_scales": torch.nn.Parameter(torch.from_numpy(shift_scale.astype(np.float32)).squeeze(1)),
+        "shift_quats": torch.nn.Parameter(torch.from_numpy(shift_quat.astype(np.float32)).squeeze(1)),
     })
-    
+
     return splats

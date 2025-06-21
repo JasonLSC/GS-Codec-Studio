@@ -42,7 +42,7 @@ from lib_bilagrid import (
     total_variation_loss,
 )
 
-from gsplat.compression import SeqHevcCompression
+from gsplat.compression import SeqHevcCompressionRot
 from gsplat.distributed import cli
 from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
@@ -52,6 +52,9 @@ from gsplat.compression_simulation.entropy_model import Entropy_factorized_optim
 
 from helper.ges_tm.pre_process_gaussian import load_ply_and_quant
 from helper.ges_tm.post_process_gaussian import inverse_load_ply
+
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
 
 @dataclass
@@ -63,7 +66,7 @@ class CodecConfig:
 class AttributeCodecs:
     means: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_png_16bit", "_decompress_png_16bit"))
     scales: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_factorized_ans", "_decompress_factorized_ans"))
-    quats: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_factorized_ans", "_decompress_factorized_ans"))
+    quats: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_kmeans", "_decompress_kmeans"))
     opacities: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_png", "_decompress_png"))
     sh0: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_png", "_decompress_png"))
     shN: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_masked_kmeans", "_decompress_masked_kmeans"))
@@ -80,6 +83,10 @@ def default_qp_values() -> Dict[str, Union[int, Dict[str, Any]]]:
         "means": -1,
         "opacities": 4,
         "quats": 4,
+        "shift_quats": -1,
+        "shift_scales": -1,
+        "shift_sh0": -1,
+        "shift_shN": -1,    
         "scales": 4,
         "sh0": 4,
         "shN":{
@@ -124,7 +131,7 @@ class VideoCompressionConfig(CompressionConfig):
         Convert the CompressionConfig instance to a dictionary.
         If attribute_codec_registry is not None, it will be converted to a dictionary using its to_dict method.
         """
-        # Get only attributes defined in VideoCompressionConfig
+        # Get only attributes defined in VideoCompre`1233ssionConfig
         video_compression_attrs = [
             "use_sort", "verbose", "qp", "n_clusters", 
             "use_all_intra", "debug"
@@ -171,6 +178,10 @@ class Config:
     # factorized model:
     entropy_steps: Dict[str, int] = field(default_factory=lambda: {"means": -1, 
                                                                    "quats": 10_000, 
+                                                                   "shift_quats": -1,
+                                                                    "shift_scales": -1,
+                                                                    "shift_sh0": -1,
+                                                                    "shift_shN": -1,    
                                                                    "scales": 10_000, 
                                                                    "opacities": 10_000, 
                                                                    "sh0": 20_000, 
@@ -368,7 +379,7 @@ class Runner:
 
         self.compression_cfg = cfg.compression_cfg.to_dict()
         if cfg.compression == "seq_hevc":
-            self.compression_method = SeqHevcCompression(**self.compression_cfg)
+            self.compression_method = SeqHevcCompressionRot(**self.compression_cfg)
 
     def load_ply_sequences(
         self, ply_dir: str, frame_num: int
@@ -385,67 +396,67 @@ class Runner:
         
         return splats_list
     
-    # def set_up_datasets(
-    #     self, data_dir: str, frame_num: int, cfg: Config
-    # ) -> Tuple[List[Dataset], List[Dataset]]:
-    #     all_items = sorted(glob.glob(os.path.join(data_dir, "*")))
-    #     folders = [item for item in all_items if os.path.isdir(item)]
-
-    #     trainset_list = []
-    #     valset_list = []
-    #     for folder in tqdm.tqdm(folders[:frame_num], desc="Loading colmap results"):
-    #         parser = Parser(
-    #             data_dir=folder,
-    #             factor=cfg.data_factor,
-    #             normalize=cfg.normalize_world_space,
-    #             test_every=cfg.test_every,
-    #         )
-    #         trainset = GSCDataset(
-    #             parser,
-    #             split="train",
-    #             patch_size=cfg.patch_size,
-    #             load_depths=cfg.depth_loss,
-    #             test_view_ids=cfg.test_view_id,
-    #         )
-    #         valset = GSCDataset(
-    #             parser, 
-    #             split="val", 
-    #             test_view_ids=cfg.test_view_id,)
-            
-    #         trainset_list.append(trainset)
-    #         valset_list.append(valset)
-        
-    #     return trainset_list, valset_list
-
     def set_up_datasets(
         self, data_dir: str, frame_num: int, cfg: Config
     ) -> Tuple[List[Dataset], List[Dataset]]:
-        
+        all_items = sorted(glob.glob(os.path.join(data_dir, "*")))
+        folders = [item for item in all_items if os.path.isdir(item)]
+
         trainset_list = []
         valset_list = []
-        
-        parser = Parser(
-            data_dir=data_dir,
-            factor=cfg.data_factor,
-            normalize=cfg.normalize_world_space,
-            test_every=cfg.test_every,
-        )
-        trainset = GSCDataset(
-            parser,
-            split="train",
-            patch_size=cfg.patch_size,
-            load_depths=cfg.depth_loss,
-            test_view_ids=cfg.test_view_id,
-        )
-        valset = GSCDataset(
-            parser, 
-            split="val", 
-            test_view_ids=cfg.test_view_id,)
-        
-        trainset_list.append(trainset)
-        valset_list.append(valset)
+        for folder in tqdm.tqdm(folders[:frame_num], desc="Loading colmap results"):
+            parser = Parser(
+                data_dir=folder,
+                factor=cfg.data_factor,
+                normalize=cfg.normalize_world_space,
+                test_every=cfg.test_every,
+            )
+            trainset = GSCDataset(
+                parser,
+                split="train",
+                patch_size=cfg.patch_size,
+                load_depths=cfg.depth_loss,
+                test_view_ids=cfg.test_view_id,
+            )
+            valset = GSCDataset(
+                parser, 
+                split="val", 
+                test_view_ids=cfg.test_view_id,)
+            
+            trainset_list.append(trainset)
+            valset_list.append(valset)
         
         return trainset_list, valset_list
+
+    # def set_up_datasets(
+    #     self, data_dir: str, frame_num: int, cfg: Config
+    # ) -> Tuple[List[Dataset], List[Dataset]]:
+        
+    #     trainset_list = []
+    #     valset_list = []
+        
+    #     parser = Parser(
+    #         data_dir=data_dir,
+    #         factor=cfg.data_factor,
+    #         normalize=cfg.normalize_world_space,
+    #         test_every=cfg.test_every,
+    #     )
+    #     trainset = GSCDataset(
+    #         parser,
+    #         split="train",
+    #         patch_size=cfg.patch_size,
+    #         load_depths=cfg.depth_loss,
+    #         test_view_ids=cfg.test_view_id,
+    #     )
+    #     valset = GSCDataset(
+    #         parser, 
+    #         split="val", 
+    #         test_view_ids=cfg.test_view_id,)
+        
+    #     trainset_list.append(trainset)
+    #     valset_list.append(valset)
+        
+    #     return trainset_list, valset_list
 
     # ✅ compress() 함수 내에 shift 적용 코드 추가 (압축 전에만 적용)
     def compress(self,):
@@ -459,29 +470,42 @@ class Runner:
 
         # ✅ 압축 전 shift 적용 (학습/validation에는 영향 X)
         # for splats in self.splats_list:
+            # print("Before shift shN")
+            # self.compression_method.compute_stats(splats["shN"], "shN")
             # self.compression_method.shift_quats(splats)
             # self.compression_method.shift_scales(splats)
             # self.compression_method.shift_sh_coefficients(splats)
+            # print("After shift shN")
+            # self.compression_method.compute_stats(splats["shN"], "shN")
 
         splats_videos = self.compression_method.reorganize(self.splats_list)
+
+        # SHN 저장
+        raw_shN = splats_videos["shN"].cpu().detach().numpy()  # [T, H, W, 15, 3]
+        np.save(os.path.join(compress_dir, "shN_raw.npy"), raw_shN)
+
+        # QUATS 저장
+        raw_quats = splats_videos["quats"].cpu().detach().numpy()  # [T, H, W, 4]
+        raw_quats = raw_quats.reshape(-1, 4)  # ✅ Flatten: [T*H*W, 4]
+        np.save(os.path.join(compress_dir, "quats_raw.npy"), raw_quats)
+
+
         self.compression_method.compress(compress_dir)
+
         video_splats_c = self.compression_method.decompress(compress_dir)
         splats_list_c = self.compression_method.deorganize(video_splats_c)
 
-        # ✅ shift 정보 복사
-        for splats, splats_c in zip(self.splats_list, splats_list_c):
-            for k in splats.keys():
-                if k.startswith("shift") and k not in splats_c:
-                    splats_c[k] = splats[k].detach().clone().to(self.device)
-
+        
         # ✅ inverse shift 적용
         # for splat in splats_list_c:
             # self.compression_method.inverse_shift_quats(splat)
             # self.compression_method.inverse_shift_scales(splat)
             # self.compression_method.inverse_shift_sh_coefficients(splat)
+            # print("After inverse shift shN")
+            # self.compression_method.compute_stats(splat["shN"], "shN")
 
         for splats, splats_c in zip(self.splats_list, splats_list_c):
-            for k in splats_c.keys():
+            for k in splats.keys():
                 splats[k].data = splats_c[k].to(self.device)
 
         self.eval(stage="compress")
@@ -589,113 +613,10 @@ class Runner:
             scales = torch.exp(splats["scales"])  # [N, 3]
             opacities = torch.sigmoid(splats["opacities"])  # [N,]
             sh0, shN = splats["sh0"], splats["shN"]
-            
-            # 디버깅 정보
-            print(f"shapes: means={means.shape}, opacities={opacities.shape}")
-            print(f"shapes: sh0={sh0.shape}, shN={shN.shape}")
-            
-            # 1. shN만 사용하되 올바르게 처리 (근본적 해결책)
-            if shN.dim() == 3 and shN.shape[0] == 691560:
-                # shN의 구조가 올바른지 확인
-                print("Using only shN for rendering")
-                
-                # 확인: means와 shN의 첫번째 차원이 일치하는지
-                if means.shape[0] != shN.shape[0]:
-                    # 문제: N이 일치하지 않음 - 이게 핵심 문제!
-                    print(f"WARNING: means count ({means.shape[0]}) != shN count ({shN.shape[0]})")
-                    
-                    # 실제 splat 개수를 확인하고 모든 텐서의 크기를 여기에 맞춤
-                    N = min(means.shape[0], shN.shape[0])
-                    print(f"Adjusting all tensors to common size: {N}")
-                    
-                    # 모든 텐서를 N에 맞게 조정
-                    means = means[:N]
-                    quats = quats[:N]
-                    scales = scales[:N]
-                    shN = shN[:N]
-                    if opacities.shape[0] > N:
-                        opacities = opacities[:N]
-                    else:
-                        # opacities 크기가 작으면 패딩
-                        padding = torch.ones(N - opacities.shape[0], device=opacities.device) * 0.5
-                        opacities = torch.cat([opacities, padding])
-                
-                # sh0 차원이 정확히 안 맞으므로 무시하고 shN만 사용
-                colors = shN
-                
-            else:
-                # 예상치 못한 형태일 경우
-                print(f"WARNING: Unexpected shN shape: {shN.shape}")
-                
-                # 2. 이 경우 기본 구현으로 돌아가기
-                if sh0.dim() == 1:
-                    # sh0를 [N, 3] 형태로 재구성
-                    sh0_splats = sh0.shape[0] // 3
-                    if sh0.shape[0] % 3 == 0:
-                        sh0 = sh0.reshape(sh0_splats, 3)
-                    else:
-                        # 요소 수가 3의 배수가 아니면
-                        print(f"WARNING: sh0 size {sh0.shape[0]} is not divisible by 3!")
-                        # 기본 색상으로 대체
-                        sh0 = torch.ones(means.shape[0], 3, device=sh0.device) * 0.5
-                    
-                    # [N, 3] -> [N, 1, 3] 변환
-                    sh0 = sh0.unsqueeze(1)
-                
-                # 첫 번째 차원을 means에 맞춤
-                means_count = means.shape[0]
-                if sh0.shape[0] != means_count:
-                    if sh0.shape[0] > means_count:
-                        sh0 = sh0[:means_count]
-                    else:
-                        padding = torch.zeros(means_count - sh0.shape[0], *sh0.shape[1:], device=sh0.device)
-                        sh0 = torch.cat([sh0, padding], dim=0)
-                
-                if shN.shape[0] != means_count:
-                    if shN.shape[0] > means_count:
-                        shN = shN[:means_count]
-                    else:
-                        padding = torch.zeros(means_count - shN.shape[0], *shN.shape[1:], device=shN.device)
-                        shN = torch.cat([shN, padding], dim=0)
-                
-                # 이제 연결 시도해보기
-                try:
-                    colors = torch.cat([sh0, shN], 1)
-                    print(f"Successfully concatenated colors: {colors.shape}")
-                except Exception as e:
-                    print(f"Failed to concatenate: {e}. Using shN only.")
-                    colors = shN if shN.shape[0] == means_count else sh0
         else:
             raise NotImplementedError(f"Should pass splats dict.")
-        
-        # 모든 입력의 첫 번째 차원이 일치하는지 확인
-        n_splats = means.shape[0]
-        for name, tensor in [
-            ("opacities", opacities),
-            ("colors", colors),
-            ("quats", quats),
-            ("scales", scales)
-        ]:
-            if tensor.shape[0] != n_splats:
-                print(f"ERROR: {name} shape[0]={tensor.shape[0]} doesn't match means={n_splats}")
-                if name == "opacities":
-                    # opacities는 1D이므로 특별 처리
-                    if tensor.shape[0] > n_splats:
-                        opacities = tensor[:n_splats]
-                    else:
-                        padding = torch.ones(n_splats - tensor.shape[0], device=tensor.device) * 0.5
-                        opacities = torch.cat([tensor, padding])
-                elif name == "colors":
-                    # colors는 3D 텐서
-                    if tensor.shape[0] > n_splats:
-                        colors = tensor[:n_splats]
-                    else:
-                        padding = torch.zeros(n_splats - tensor.shape[0], *tensor.shape[1:], device=tensor.device)
-                        colors = torch.cat([tensor, padding], dim=0)
-
-        # 최종 검증
-        assert means.shape[0] == opacities.shape[0], f"means: {means.shape}, opacities: {opacities.shape}"
-        assert means.shape[0] == colors.shape[0], f"means: {means.shape}, colors: {colors.shape}"
+    
+        colors = torch.cat([sh0, shN], 1)  # [N, K, 3]
 
         rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
         render_colors, render_alphas, info = rasterization(
@@ -704,8 +625,8 @@ class Runner:
             scales=scales,
             opacities=opacities,
             colors=colors,
-            viewmats=torch.linalg.inv(camtoworlds),
-            Ks=Ks,
+            viewmats=torch.linalg.inv(camtoworlds),  # [C, 4, 4]
+            Ks=Ks,  # [C, 3, 3]
             width=width,
             height=height,
             packed=self.cfg.packed,
@@ -723,8 +644,6 @@ class Runner:
         if masks is not None:
             render_colors[~masks] = 0
         return render_colors, render_alphas, info
-
-
     
     @torch.no_grad()
     def eval(self, stage: str = "val"):
@@ -752,6 +671,9 @@ class Runner:
                 masks = data["mask"].to(device) if "mask" in data else None
                 height, width = pixels.shape[1:3]
                 splats = splats.to(device)
+
+                if "sh0" in splats and splats["sh0"].ndim == 2:
+                    splats["sh0"] = splats["sh0"].unsqueeze(1)
 
                 torch.cuda.synchronize()
                 tic = time.time()
@@ -1027,6 +949,10 @@ if __name__ == "__main__":
                         "means": -1,
                         "opacities": 4,
                         "quats": 4,
+                        "shift_quats": -1,
+                        "shift_scales": -1,
+                        "shift_sh0": -1,
+                        "shift_shN": -1,    
                         "scales": 4,
                         "sh0": 4,
                         "shN": {
@@ -1047,6 +973,10 @@ if __name__ == "__main__":
                         "means": -1,
                         "opacities": 4,
                         "quats": 10,
+                        "shift_quats": -1,
+                        "shift_scales": -1,
+                        "shift_sh0": -1,
+                        "shift_shN": -1,    
                         "scales": 10,
                         "sh0": 4,
                         "shN": {
@@ -1067,6 +997,10 @@ if __name__ == "__main__":
                         "means": -1,
                         "opacities": 10,
                         "quats": 16,
+                        "shift_quats": -1,
+                        "shift_scales": -1,
+                        "shift_sh0": -1,
+                        "shift_shN": -1,    
                         "scales": 16,
                         "sh0": 10,
                         "shN": {
@@ -1087,6 +1021,10 @@ if __name__ == "__main__":
                         "means": -1,
                         "opacities": 16,
                         "quats": 22,
+                        "shift_quats": -1,
+                        "shift_scales": -1,
+                        "shift_sh0": -1,
+                        "shift_shN": -1,    
                         "scales": 22,
                         "sh0": 16,
                         "shN": {

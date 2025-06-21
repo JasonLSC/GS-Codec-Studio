@@ -811,8 +811,9 @@ class Runner:
     @torch.no_grad()
     def memory_manage(self, step: int):
         # delete intermeidate variables
-        del self.comp_sim_splats
-        del self.esti_bits_dict
+        if cfg.compression_sim:
+            del self.comp_sim_splats
+            del self.esti_bits_dict
         if step % 200 == 0:
             torch.cuda.empty_cache()
 
