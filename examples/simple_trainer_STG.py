@@ -113,8 +113,8 @@ class Config:
     antialiased: bool = False
     duration: int = 50 # 20 # number of frames to train
     ssim_lambda: float = 0.2 # Weight for SSIM loss
-    save_steps: List[int] = field(default_factory=lambda: [i for i in range(9_000, 75_001, 3_000)]) # Steps to save the model
-    eval_steps: List[int] = field(default_factory=lambda: [i for i in range(0, 75_001, 3_000)]) # Steps to evaluate the model # 7_000, 30_000
+    save_steps: List[int] = field(default_factory=lambda: [i for i in range(0, 30_001, 10_000)]) # Steps to save the model
+    eval_steps: List[int] = field(default_factory=lambda: [i for i in range(0, 30_001, 10_000)]) # Steps to evaluate the model # 7_000, 30_000
     # eval_steps: List[int] = field(default_factory=lambda: [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 25_000, 30_000])
     # Number of densification
     desicnt: int = 6 # default: 6
@@ -860,8 +860,9 @@ class Runner:
     @torch.no_grad()
     def memory_manage(self, step: int):
         # delete intermeidate variables
-        del self.comp_sim_splats
-        del self.esti_bits_dict
+        if self.cfg.compression_sim:
+            del self.comp_sim_splats
+            del self.esti_bits_dict
         if step % 200 == 0:
             torch.cuda.empty_cache()
 
