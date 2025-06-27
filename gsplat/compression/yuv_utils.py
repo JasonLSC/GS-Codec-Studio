@@ -222,7 +222,7 @@ def _load_yuv_to_tensor(
         height: int,
         width: int,
         pix_fmt: Literal["yuv420p", "yuv444p", "yuv400p"],
-        bit_depth: int = 8
+        bit_depth: int = 10 # The Default bit depth of the Decoded YUV file
 ) -> Tensor:
     """
     Load a raw YUV file into a PyTorch tensor.
@@ -343,7 +343,10 @@ def _load_yuv_to_tensor(
 
     # Stack all frames: List[(H, W, 3)] -> [T, H, W, 3]
     video_tensor = torch.stack(all_frames, dim=0)
-
+    if bit_depth == 10:
+        # Convert to unit8 if the original data was in 10-bit format
+        video_tensor = (video_tensor >> 2).to(torch.uint8)  # right shift by 2 to convert 10-bit to 8-bit
+        # video_tensor = (video_tensor.float() * 255.0 / 1023.0).round().clamp(0, 255).to(torch.uint8)
     return video_tensor
 
 def gaussian_downsample(input_tensor: torch.Tensor, sigma: float = 1.0, kernel_size: int = 5) -> torch.Tensor:

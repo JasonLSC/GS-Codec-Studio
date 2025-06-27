@@ -93,21 +93,22 @@ def default_qp_values() -> Dict[str, Union[int, Dict[str, Any]]]:
 
 def default_attribute_configs() -> Dict[str, List[str]]:
     """default attribute configs"""
+    # GPCC highest quality configuration
     return {
-        "means": {"qp": 0, "pix_fmt": "yuv444p"},
-        "opacities": {"qp": 4, "pix_fmt": "yuv400p"},
+        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+        "opacities": {"qp": 22, "pix_fmt": "yuv400p"},
         "quats": {
-            "w": {"qp": 4, "pix_fmt": "yuv400p"},
-            "xyz": {"qp": 4, "pix_fmt": "yuv444p"},
+            "w": {"qp": 14, "pix_fmt": "yuv400p"},
+            "xyz": {"qp": 14, "pix_fmt": "yuv444p"},
         },
-        "scales": {"qp": 4, "pix_fmt": "yuv444p"},
-        "sh0": {"qp": 16, "pix_fmt": "yuv444p"},
+        "scales": {"qp": 14, "pix_fmt": "yuv444p"},
+        "sh0": {"qp": 4, "pix_fmt": "yuv444p"},
         "shN": {
-            "sh1": {"qp": 20, "pix_fmt": "yuv444p"},
-            "sh2": {"qp": 24, "pix_fmt": "yuv444p"},
-            "sh3": {"qp": 28, "pix_fmt": "yuv444p"},
+            "sh1": {"qp": 14, "pix_fmt": "yuv444p"},
+            "sh2": {"qp": 22, "pix_fmt": "yuv444p"},
+            "sh3": {"qp": 25, "pix_fmt": "yuv444p"},
         },
-        "default": {"qp": 22, "pix_fmt": "yuv444p"}, 
+        "default": {"qp": -1, "pix_fmt": "yuv444p"}, 
 }
 
 
@@ -130,6 +131,8 @@ class SeqYUVCodecConfig(CompressionConfig):
     video_codec_type: str = "vtm"
     # Use PLAS sort in compression or not
     use_sort: bool = True
+    # sort type
+    sort_type: Literal["plas", "morton"] = "morton"
     # Verbose or not
     verbose: bool = True
     # QP configuration - can be either int or dict for different attributes
@@ -170,7 +173,7 @@ class SeqYUVCodecConfig(CompressionConfig):
         """
         # Get only attributes defined in VideoCompressionConfig
         video_compression_attrs = [
-            "video_codec_type", "use_sort", "verbose", "qp", 
+            "video_codec_type", "use_sort", "sort_type", "verbose", "qp", 
             "use_all_intra", "debug", "transform_attributes",
             "chroma_subsampling", "use_chroma_qp_offset", "attribute_configs",
         ]

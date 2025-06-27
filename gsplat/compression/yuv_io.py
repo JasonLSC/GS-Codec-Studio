@@ -103,7 +103,7 @@ class YUVDataHandler:
         sanitized_suffix = f"_{suffix}" if suffix else ""
         base_file_name = f"gop{self.gop_id}_{param_name}{sanitized_suffix}"
         yuv_path = self.yuv_dir / f"{base_file_name}.yuv"
-        decoded_yuv_path = self.yuv_dir / f"{base_file_name}.yuv" 
+        decoded_yuv_path = self.yuv_dir / f"{base_file_name}_decoded.yuv" 
         return yuv_path, decoded_yuv_path
     
     def save_all_to_yuv(self) -> Dict[str, Any]:

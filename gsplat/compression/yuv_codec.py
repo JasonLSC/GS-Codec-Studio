@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Any, Union, Optional
+from typing import Dict, List, Any, Union, Optional, Literal
 
 import numpy as np
 import torch
@@ -54,6 +54,7 @@ class SeqYUVCodec:
     debug: bool = False
     color_standard: str = "BT709"
     use_sort: bool = True
+    sort_type: Literal["plas", "morton"] = "morton"
     use_all_intra: bool = False  # If True, all frames are intra-coded
     # ### <<< REFACTOR: A single, unified config dictionary is much cleaner ###
     attribute_configs: Optional[Dict[str, Dict[str, Any]]] = None
@@ -312,9 +313,12 @@ class SeqYUVCodec:
             print(
                 f"Warning: Number of Gaussians was not square. Padded {n_pad} Gaussians."
             )
-        
-        # _, sorted_indices = sort_splats(splats_to_be_sorted, return_indices=True, sort_with_shN=False)
-        _, sorted_indices = sort_splats_morton(splats_to_be_sorted, return_indices=True)
+        if self.sort_type == "plas":
+             _, sorted_indices = sort_splats(splats_to_be_sorted, return_indices=True, sort_with_shN=False)
+        elif self.sort_type == "morton":
+            _, sorted_indices = sort_splats_morton(splats_to_be_sorted, return_indices=True)
+        else:
+            raise ValueError(f"Unknown sort type: {self.sort_type}. Use 'plas' or 'morton'.")
         print(f"Finsh the sorting with frame {frame_id}.")
 
         return sorted_indices
@@ -467,9 +471,10 @@ class SeqYUVCodec:
         logging.info(f"Metadata loaded from {meta_path}")
         return meta
 
-    def _get_atribute_configs(self, yuv_name: str, n_sidelen : int, bit_depth : int=8) -> Dict[str, Any]:
+    def _get_atribute_encode_configs(self, yuv_name: str, n_sidelen : int, frame_num : int, bit_depth : int=8) -> Dict[str, Any]:
         """Get the configuration parameters for a specific attribute based on its name."""
         common_config = {
+            'frame_num': frame_num,
             'use_all_intra': self.use_all_intra,
             'width': n_sidelen,
             'height': n_sidelen,
@@ -500,7 +505,7 @@ class SeqYUVCodec:
         # Combine common config with specific attribute config
         config_params = {**common_config, **specific_config}
         return config_params
-           
+        
     
     ### <<< REFACTOR: Main compress/decompress flows are now clear and correct ###
     def compress(self, splats_list: List[Dict[str, Tensor]], compress_dir: Path, gop_id: int) -> None:
@@ -542,23 +547,23 @@ class SeqYUVCodec:
         meta = yuv_data_handler.save_all_to_yuv()
         self._save_metadata(compress_dir, gop_id, meta)
         
-        # # 3. Encode each YUV to a bitstream
-        # video_codec = VideoCodec(
-        #     video_codec_type=self.video_codec_type,
-        # )
-        # yuv_files = [f for f in yuv_dir.glob("*.yuv")]
-        # if not yuv_files:
-        #     logging.error(f"No YUV files found in {yuv_dir}. Cannot compress.")
-        #     return
-        # for yuv_path in yuv_files:
-        #     yuv_name = yuv_path.stem
-        #     bitstream_path = compress_dir / f"{yuv_name}.mp4"
-        #     config_params = self._get_atribute_configs(yuv_name, n_sidelen, bit_depth=8)
-        #     video_codec.encode(
-        #         input_yuv=yuv_path,
-        #         output_bitstream=bitstream_path,
-        #         config_params=config_params
-        #     )
+        # 3. Encode each YUV to a bitstream
+        video_codec = VideoCodec(
+            video_codec_type=self.video_codec_type,
+        )
+        yuv_files = [f for f in yuv_dir.glob("*.yuv")]
+        if not yuv_files:
+            logging.error(f"No YUV files found in {yuv_dir}. Cannot compress.")
+            return
+        for yuv_path in yuv_files:
+            yuv_name = yuv_path.stem
+            bitstream_path = compress_dir / f"{yuv_name}.mp4"
+            config_params = self._get_atribute_encode_configs(yuv_name, n_sidelen, frame_num=len(splats_list))
+            video_codec.encode(
+                input_yuv=yuv_path,
+                output_bitstream=bitstream_path,
+                config_params=config_params
+            )
         logging.info("--- Compression Process Finished ---")
         
 
@@ -582,25 +587,23 @@ class SeqYUVCodec:
 
         meta = self._load_metadata(compress_dir, gop_id)
         
-        # video_codec = VideoCodec(
-        #     video_codec_type=self.video_codec_type,
-        # )
-        # bin_files = [f for f in compress_dir.glob("*.mp4")]
-        # if not bin_files:
-        #     logging.error(f"No compressed files found in {compress_dir}. Cannot decompress.")
-        #     return []
-        # for bin_path in bin_files:
-        #     yuv_name = bin_path.stem
-        #     yuv_path = yuv_dir / f"{yuv_name}_decoded.yuv"
-        #     config_params = self._get_atribute_configs(yuv_name,n_sidelen=None, bit_depth=8)
-        #     if not yuv_path.exists():
-        #         video_codec.decode(
-        #             input_bitstream=bin_path,
-        #             output_yuv=yuv_path,
-        #             config_params=config_params
-        #         )
-        #     else:
-        #         logging.info(f"YUV file already exists: {yuv_path}. Skipping decoding.")
+        video_codec = VideoCodec(
+            video_codec_type=self.video_codec_type,
+        )
+        bin_files = [f for f in compress_dir.glob("*.mp4")]
+        if not bin_files:
+            logging.error(f"No compressed files found in {compress_dir}. Cannot decompress.")
+            return []
+        for bin_path in bin_files:
+            yuv_name = bin_path.stem
+            yuv_path = yuv_dir / f"{yuv_name}_decoded.yuv"
+            if not yuv_path.exists():
+                video_codec.decode(
+                    input_bitstream=bin_path,
+                    output_yuv=yuv_path,
+                )
+            else:
+                logging.info(f"YUV file already exists: {yuv_path}. Skipping decoding.")
         # 2. Load from YUV and metadata
         yuv_data_handler = YUVDataHandler(
             yuv_dir=yuv_dir, 

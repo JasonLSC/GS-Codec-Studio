@@ -3,7 +3,11 @@
 # Define the list of GPU IDs to use
 GPU_IDS=(0 1 2 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
-EXP_DIR=results/mpeg151/yuv_codec/bartender
+dataset=cinema
+frame_num=32
+
+# EXP_DIR=results/mpeg151/yuv_codec/${dataset}
+EXP_DIR=results/m71763_${dataset}_stable/track/frame${frame_num}/yuv_codec
 
 # Function to run a single experiment
 run_experiment() {
@@ -14,18 +18,19 @@ run_experiment() {
     
     CUDA_VISIBLE_DEVICES=${gpu_id} python codec_ply_sequence.py seq_yuv_codec_debug \
         --data_factor 1 \
-        --ply_dir data/GSC_splats/m71763_bartender_stable/track \
-        --data_dir data/GSC_splats/m71763_bartender_stable/colmap_data \
+        --ply_dir data/GSC_splats/m71763_${dataset}_stable/track \
+        --data_dir data/GSC_splats/m71763_${dataset}_stable/colmap_data \
         --result_dir ${EXP_DIR}/rp${rp_id} \
-        --frame_num 1 \
+        --frame_num ${frame_num} \
         --gop_size 16 \
         --lpips_net vgg \
         --no-normalize_world_space \
         --scene_type GSC \
         --test_view_id 0 \
         --compression_cfg.use_sort \
-        --compression_cfg.use_all_intra \
+        --compression_cfg.sort_type morton \
         --compression_cfg.video_codec_type ffmpeg
+        #--compression_cfg.use_all_intra \
     
     echo "Experiment rp${rp_id} started on GPU ${gpu_id}"
 }
