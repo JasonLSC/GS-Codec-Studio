@@ -1,0 +1,52 @@
+SEIOmiCancelFlag: 0
+SEIOmiPersistenceFlag: 0
+SEIOmiNumAuxPicLayerMinus1: 0
+SEIOmiMaskIdLengthMinus1: 3
+SEIOmiMaskSampleValueLengthMinus8: 2
+SEIOmiMaskConfidenceInfoPresentFlag: 1
+SEIOmiMaskConfidenceLengthMinus1: 3
+SEIOmiMaskDepthInfoPresentFlag: 1
+SEIOmiMaskDepthLengthMinus1: 3
+SEIOmiMaskLabelInfoPresentFlag: 1
+SEIOmiMaskLabelLanguagePresentFlag: 1
+#SEIOmiBitEqualToZero: 0
+SEIOmiMaskLabelLanguage: English
+
+SEIOmiMaskPicUpdateFlag[0]: 1
+SEIOmiNumMaskInPic[0]: 3
+
+SEIOmiMaskId[0][0]: 0
+SEIOmiMaskNew[0][0]: 1
+SEIOmiAuxSampleValue[0][0]: 32
+SEIOmiBoundingBoxPresentFlag[0][0]: 1
+SEIOmiMaskTop[0][0]: 10
+SEIOmiMaskLeft[0][0]: 10
+SEIOmiMaskWidth[0][0]: 20
+SEIOmiMaskHeight[0][0]: 20
+SEIOmiMaskConfidence[0][0]: 15
+SEIOmiMaskDepth[0][0]: 10
+SEIOmiMaskLabel[0][0]: mask0
+
+SEIOmiMaskId[0][1]: 1
+SEIOmiMaskNew[0][1]: 1
+SEIOmiAuxSampleValue[0][1]: 64
+SEIOmiBoundingBoxPresentFlag[0][1]: 1
+SEIOmiMaskTop[0][1]: 30
+SEIOmiMaskLeft[0][1]: 30
+SEIOmiMaskWidth[0][1]: 40
+SEIOmiMaskHeight[0][1]: 40
+SEIOmiMaskConfidence[0][1]: 15
+SEIOmiMaskDepth[0][1]: 11
+SEIOmiMaskLabel[0][1]: mask1
+
+SEIOmiMaskId[0][2]: 2
+SEIOmiMaskNew[0][2]: 1
+SEIOmiAuxSampleValue[0][2]: 128
+SEIOmiBoundingBoxPresentFlag[0][2]: 1
+SEIOmiMaskTop[0][2]: 50
+SEIOmiMaskLeft[0][2]: 50
+SEIOmiMaskWidth[0][2]: 60
+SEIOmiMaskHeight[0][2]: 60
+SEIOmiMaskConfidence[0][2]: 15
+SEIOmiMaskDepth[0][2]: 15
+SEIOmiMaskLabel[0][2]: mask2

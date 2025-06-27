@@ -1,0 +1,5 @@
+# width height x    y    bitstream
+  512	384    0    0    str1.bin
+  512	384    512  0    str2.bin
+  512	384    0    384  str3.bin
+  512	384    512  384  str4.bin

@@ -3,7 +3,7 @@ SCENE_DIR="data/GSC"
 SCENE_LIST="Bartender" 
 
 # 0.16M GSs
-RESULT_DIR="results/mpeg_gscodec"
+RESULT_DIR="results/mpeg_static_gscodec_splats"
 CAP_MAX=160000
 
 RD_LAMBDA=0.01

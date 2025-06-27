@@ -43,7 +43,7 @@ from lib_bilagrid import (
     total_variation_loss,
 )
 
-from gsplat.compression import SeqHevcCompression
+from gsplat.compression import SeqHevcCompression, SeqYUVCompression
 from gsplat.distributed import cli
 from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
@@ -119,6 +119,28 @@ class VideoCompressionConfig(CompressionConfig):
     use_all_intra: bool = False
     # Enable debug mode
     debug: bool = False
+    # Indicate which attributes to transform domain before sorting and compression, 
+    # e.g. SH: RGB -> YCbCr, Quat: Unit Quaternion -> Euler Angles
+    transform_attributes: Dict[str, bool] = field(
+        default_factory=lambda: {
+            "means": False,
+            "scales": False,
+            "quats": False,
+            "opacities": False,
+            "sh0": False,
+            "shN": False
+        }
+    )
+    # Chroma subsampling for shN compression
+    chroma_subsampling: Dict[str, str] = field(default_factory=lambda: {
+        "sh0": "444",
+        "shN": "420"
+    })
+    # Use chroma qp offset for sh0 and shN compression
+    use_chroma_qp_offset: Dict[str, bool]= field(default_factory=lambda: {
+        "sh0": False,
+        "shN": False
+    })
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -128,7 +150,8 @@ class VideoCompressionConfig(CompressionConfig):
         # Get only attributes defined in VideoCompressionConfig
         video_compression_attrs = [
             "use_sort", "verbose", "qp", "n_clusters", 
-            "use_all_intra", "debug"
+            "use_all_intra", "debug", "transform_attributes",
+            "chroma_subsampling", "use_chroma_qp_offset"
         ]
         
         result = {attr: getattr(self, attr) for attr in video_compression_attrs}
@@ -146,7 +169,7 @@ class Config:
     # Path to the .pt files. If provide, it will skip training and run evaluation only.
     ckpt: Optional[List[str]] = None
     # Name of compression strategy to use
-    compression: Optional[Literal["seq_hevc"]] = None
+    compression: Optional[Literal["seq_hevc", "seq_yuv"]] = None
     # # Quantization parameters when set to hevc
     # qp: Optional[int] = None
     # Configuration for compression methods
@@ -370,8 +393,13 @@ class Runner:
         self.trainset_list, self.valset_list = self.set_up_datasets(cfg.data_dir, cfg.frame_num, cfg)
 
         self.compression_cfg = cfg.compression_cfg.to_dict()
+        
         if cfg.compression == "seq_hevc":
             self.compression_method = SeqHevcCompression(**self.compression_cfg)
+        elif cfg.compression == "seq_yuv":
+            self.compression_method = SeqYUVCompression(**self.compression_cfg)
+        else:
+            raise ValueError(f"Unknown compression method: {cfg.compression}")
 
     def load_ply_sequences(
         self, ply_dir: str, frame_num: int
@@ -428,13 +456,15 @@ class Runner:
             shutil.rmtree(compress_dir)
         os.makedirs(compress_dir)
 
+        # compress
+        splats_list = self.compression_method.param_transform(self.splats_list, cfg.compression_cfg.transform_attributes)   
         # compression: loop on GOPs
         num_gop = (self.frame_num + self.cfg.gop_size - 1) // self.cfg.gop_size
         for gop_id in range(num_gop):
             gop_start_frame_id = gop_id * self.cfg.gop_size
             gop_end_frame_id = min(gop_start_frame_id + self.cfg.gop_size, self.frame_num)
 
-            splats_videos = self.compression_method.reorganize(self.splats_list[gop_start_frame_id:gop_end_frame_id], gop_id)
+            splats_videos = self.compression_method.reorganize(splats_list[gop_start_frame_id:gop_end_frame_id], gop_id)
             self.compression_method.compress(splats_videos, compress_dir, gop_id)
 
         # decompression: loop on GOPs
@@ -443,15 +473,19 @@ class Runner:
             gop_start_frame_id = gop_id * self.cfg.gop_size
             gop_end_frame_id = min(gop_start_frame_id + self.cfg.gop_size, self.frame_num)
 
-            video_splats_c = self.compression_method.decompress(compress_dir, gop_id)
-            splats_list_c = self.compression_method.deorganize(video_splats_c)
-            full_splats_list_c.extend(splats_list_c)
+    
+        # decompress
+        video_splats_c = self.compression_method.decompress(compress_dir, gop_id)
+        splats_list_c = self.compression_method.deorganize(video_splats_c)
+        splats_list_c = self.compression_method.param_inverse_transform(splats_list_c, cfg.compression_cfg.transform_attributes)
+        full_splats_list_c.extend(splats_list_c)
 
         for splats, splats_c in zip(self.splats_list, full_splats_list_c):
             for k in splats.keys():
                 splats[k].data = splats_c[k].to(self.device)
 
-        self.eval(stage="compress")
+        comp_stats = self.eval(stage="compress")
+        return comp_stats
 
     def pcc_compress(self, ):
         """Entry for running pc anchor compression."""
@@ -714,6 +748,8 @@ class Runner:
 
         return seq_stats
 
+        return seq_stats
+
     def eval_pngs_with_gsc_ctc_metrics(self, ):
         from helper.mpeg_gsc.gsc_metric import run_QMIV_metric_for_pngs, run_LPIPS_for_pngs
         from pathlib import Path
@@ -866,13 +902,63 @@ class Runner:
                 # print(f"Running: {cmd}")
                 # os.system(cmd)
                 # print(f"YUV Video created for {stage}, test view {test_view_id}")
+    
+    def test_transform(self):
+        '''
+        Test the transform and inverse transform of the splats list
+        '''
+        splats_list = self.splats_list
+        splats_list = self.compression_method.param_transform(splats_list, self.cfg.compression_cfg.transform_attributes)
+        splats_list = self.compression_method.param_inverse_transform(splats_list, self.cfg.compression_cfg.transform_attributes)
+
+        seq_stats = self.eval(splats_list=splats_list)
+
+        return seq_stats
+
+    def compare_render_stats(self, stats1: Dict, stats2: Dict, name1: str = "Original", name2: str = "Modified") -> None:
+        """
+        Compare rendering statistics between two sets of results.
+        
+        Args:
+            stats1 (Dict): First set of rendering statistics
+            stats2 (Dict): Second set of rendering statistics
+            name1 (str): Name/label for the first set of statistics (default: "Original")
+            name2 (str): Name/label for the second set of statistics (default: "Modified")
+        
+        The function prints a comparison of PSNR, SSIM, and LPIPS metrics for each frame
+        and the average across all frames, showing the difference between the two sets.
+        """
+        print(f"\n=== Rendering Comparison: {name1} vs {name2} ===")
+        
+        for frame_id in stats1.keys():
+            if frame_id == "average":
+                print("\n=== Average Metrics Comparison ===")
+            else:
+                print(f"\n=== Frame {frame_id} Comparison ===")
+            
+            metrics1 = stats1[frame_id]
+            metrics2 = stats2[frame_id]
+            
+            for metric in ["psnr", "ssim", "lpips"]:
+                value1 = metrics1[metric]
+                value2 = metrics2[metric]
+                diff = value2 - value1
+                diff_str = f"+{diff:.4f}" if diff > 0 else f"{diff:.4f}"
+                
+                print(f"{metric.upper():<8}: {value1:.4f} -> {value2:.4f} ({diff_str})")
 
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     runner = Runner(local_rank, world_rank, world_size, cfg)
     
-    runner.eval()
+    render_stats = runner.eval()
+
+    ### function test for transform and inverse transform
+    # transform_stats = runner.test_transform()
+    # runner.compare_render_stats(render_stats, transform_stats)
+
     if cfg.anchor_type == "video":
-        runner.compress()
+        compress_stats = runner.compress()
+        runner.compare_render_stats(render_stats, compress_stats, name1="Uncompressed", name2="Compressed")
     elif cfg.anchor_type == "pcc":
         runner.pcc_compress()
     else:
@@ -881,6 +967,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     runner.stack_render_img_to_vid()
     runner.eval_pngs_with_gsc_ctc_metrics()
     # runner.eval_with_gsc_ctc_metrics()
+    # # runner.eval_with_gsc_ctc_metrics()
     runner.summary()
 
 if __name__ == "__main__":
@@ -932,7 +1019,36 @@ if __name__ == "__main__":
             "Use HevcCompression.",
             Config(
                 compression="seq_hevc",
-                compression_cfg=VideoCompressionConfig(n_clusters=8192)
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 4,
+                            "sh2": 4,
+                            "sh3": 4
+                        }
+                    }
+                )
             )
         ),
         "x265_compression_rp0": (
@@ -1002,6 +1118,122 @@ if __name__ == "__main__":
                 compression_cfg=VideoCompressionConfig(
                     qp={
                         "means": -1,
+                        "opacities": 16,
+                        "quats": 22,
+                        "scales": 22,
+                        "sh0": 16,
+                        "shN": {
+                            "sh1": 28,
+                            "sh2": 34,
+                            "sh3": 40
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp0": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp1": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 10,
+                        "scales": 10,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp2": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 10,
+                        "quats": 16,
+                        "scales": 16,
+                        "sh0": 10,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp3": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 16,
+                        "quats": 22,
+                        "scales": 22,
+                        "sh0": 16,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "transform_x265_compression_rp0":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
                         "opacities": 4,
                         "quats": 4,
                         "scales": 4,
@@ -1015,8 +1247,627 @@ if __name__ == "__main__":
                 )
             )
         ),
+        "transform_x265_compression_rp1":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 10,
+                        "quats": 16,
+                        "scales": 16,
+                        "sh0": 10,
+                        "shN": {
+                            "sh1": 22,
+                            "sh2": 28,
+                            "sh3": 34
+                        }
+                    }
+                )
+            )
+        ),
+        "transform_x265_compression_rp2":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 10,
+                        "scales": 10,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 16,
+                            "sh2": 22,
+                            "sh3": 28
+                        }
+                    }
+                )
+            )
+        ),
+        "transform_x265_compression_rp3":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 4,
+                            "sh2": 4,
+                            "sh3": 4
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp0": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp1": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 10,
+                        "scales": 10,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp2": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 10,
+                        "quats": 16,
+                        "scales": 16,
+                        "sh0": 10,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "x265_compression_large_shN_qp_rp3": (
+            "Use HevcCompression with larger shN QP values.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    qp={
+                        "means": -1,
+                        "opacities": 16,
+                        "quats": 22,
+                        "scales": 22,
+                        "sh0": 16,
+                        "shN": {
+                            "sh1": 36,
+                            "sh2": 40,
+                            "sh3": 44
+                        }
+                    }
+                )
+            )
+        ),
+        "transform_x265_compression_rp0":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 4,
+                            "sh2": 4,
+                            "sh3": 4
+                        }
+                    }
+                )
+            )
+        ),
+        "transform_x265_compression_rp1":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 10,
+                        "scales": 10,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 16,
+                            "sh2": 22,
+                            "sh3": 28
+                        }
+                    }
+                )
+            )
+        ),
+        "transform_x265_compression_rp2":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 10,
+                        "quats": 16,
+                        "scales": 16,
+                        "sh0": 10,
+                        "shN": {
+                            "sh1": 22,
+                            "sh2": 28,
+                            "sh3": 34
+                        }
+                    }
+                )
+            )
+        ),
+        "transform_x265_compression_rp3":(
+            "Use HevcCompression with transform.",
+            Config(
+                compression="seq_hevc",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 16,
+                        "quats": 22,
+                        "scales": 22,
+                        "sh0": 16,
+                        "shN": {
+                            "sh1": 28,
+                            "sh2": 34,
+                            "sh3": 40
+                        }
+                    }
+                )
+            )
+        ),
+        "seq_yuv_compression_rp0": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 4,
+                            "sh2": 4,
+                            "sh3": 4
+                        }
+                    }
+                )
+            )
+        ),
+        "seq_yuv_compression_rp1": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={    
+                        "means": -1,    
+                        "opacities": 4,    
+                        "quats": 10,    
+                        "scales": 10,    
+                        "sh0": 4,    
+                        "shN": {    
+                            "sh1": 16,
+                            "sh2": 22,
+                            "sh3": 28
+                        }
+                    }
+                )
+            )
+        ),
+        "seq_yuv_compression_rp2": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={    
+                        "means": -1,    
+                        "opacities": 10,    
+                        "quats": 16,    
+                        "scales": 16,    
+                        "sh0": 10,    
+                        "shN": {    
+                            "sh1": 22,
+                            "sh2": 28,
+                            "sh3": 34
+                        }
+                    }
+                )
+            )
+        ),
+        "seq_yuv_compression_rp3": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 16,
+                        "quats": 22,
+                        "scales": 22,
+                        "sh0": 16,
+                        "shN": {
+                            "sh1": 28,
+                            "sh2": 34,
+                            "sh3": 40
+                        }
+                    }
+                )
+            )           
+        ),
+        "seq_yuv_compression_newqp_rp0": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
+                        "shN": {
+                            "sh1": 4,
+                            "sh2": 4,
+                            "sh3": 4
+                        }
+                    }
+                )
+            )
+        ),
+        "seq_yuv_compression_newqp_rp1": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={    
+                        "means": -1,    
+                        "opacities": 4,    
+                        "quats": 10,    
+                        "scales": 10,    
+                        "sh0": 4,    
+                        "shN": {    
+                            "sh1": 16,
+                            "sh2": 22,
+                            "sh3": 28
+                        }
+                    }
+                )
+            )
+        ),
+        "seq_yuv_compression_newqp_rp2": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={    
+                        "means": -1,    
+                        "opacities": 10,    
+                        "quats": 16,    
+                        "scales": 16,    
+                        "sh0": 7,    
+                        "shN": {    
+                            "sh1": 22,
+                            "sh2": 28,
+                            "sh3": 34
+                        }
+                    }
+                )
+            )
+        ),
+        "seq_yuv_compression_newqp_rp3": (
+            "Use SeqYUVCompression.",
+            Config(
+                compression="seq_yuv",
+                compression_cfg=VideoCompressionConfig(
+                    attribute_codec_registry=AttributeCodecs(
+                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
+                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
+                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
+                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
+                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
+                    ),
+                    transform_attributes={
+                        "means": False,
+                        "opacities": False,
+                        "quats": True,
+                        "scales": False,
+                        "sh0": True,
+                        "shN": True,
+                    },
+                    qp={
+                        "means": -1,
+                        "opacities": 16,
+                        "quats": 22,
+                        "scales": 22,
+                        "sh0": 10,
+                        "shN": {
+                            "sh1": 28,
+                            "sh2": 34,
+                            "sh3": 40
+                        }
+                    }
+                )
+            )           
+        )
     }
-        
     cfg = tyro.extras.overridable_config_cli(configs)
 
     # try import extra dependencies

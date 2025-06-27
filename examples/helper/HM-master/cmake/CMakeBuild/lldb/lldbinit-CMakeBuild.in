@@ -1,0 +1,11 @@
+# lldbinit-@PROJECT_NAME@
+#
+# Add the following line to ~/.lldbinit
+# command source -s 0 @LLDB_INSTALL_ROOT@/lldbinit-@PROJECT_NAME@
+# 
+
+# Load a custom LLDB python module.
+command script import @LLDB_INSTALL_DIR@/CMakeBuildLldbExt.py
+
+
+# Other settings , aliases ...

@@ -1,0 +1,54 @@
+# Example colour remapping information SEI configuration file
+# One of these is required per POC, with the POC number used in the filename suffix.
+
+colour_remap_id: 1
+colour_remap_cancel_flag: 0
+colour_remap_persistence_flag: 1
+colour_remap_video_signal_info_present_flag: 1
+colour_remap_full_range_flag: 0
+colour_remap_primaries: 1
+colour_remap_transfer_function: 1
+colour_remap_matrix_coefficients: 1
+
+colour_remap_input_bit_depth: 10
+colour_remap_bit_depth: 10
+
+pre_lut_num_val_minus1[c]: 1
+pre_lut_coded_value[c][i]: 0     pre_lut_target_value[c][i]: 0
+pre_lut_coded_value[c][i]: 1023  pre_lut_target_value[c][i]: 1023
+
+pre_lut_num_val_minus1[c]: 1
+pre_lut_coded_value[c][i]: 0     pre_lut_target_value[c][i]: 0
+pre_lut_coded_value[c][i]: 1023  pre_lut_target_value[c][i]: 1023
+
+pre_lut_num_val_minus1[c]: 1
+pre_lut_coded_value[c][i]: 0     pre_lut_target_value[c][i]: 0
+pre_lut_coded_value[c][i]: 1023  pre_lut_target_value[c][i]: 1023
+
+colour_remap_matrix_present_flag: 1
+log2_matrix_denom: 10
+colour_remap_coeffs[c][i]: 1024
+colour_remap_coeffs[c][i]: 0
+colour_remap_coeffs[c][i]: 0
+
+colour_remap_coeffs[c][i]: 0
+colour_remap_coeffs[c][i]: 1024
+colour_remap_coeffs[c][i]: 0
+
+colour_remap_coeffs[c][i]: 0
+colour_remap_coeffs[c][i]: 0
+colour_remap_coeffs[c][i]: 1024
+
+post_lut_num_val_minus1[c]: 3
+post_lut_coded_value[c][i]: 0    post_lut_target_value[c][i]: 0
+post_lut_coded_value[c][i]: 200  post_lut_target_value[c][i]: 100
+post_lut_coded_value[c][i]: 800  post_lut_target_value[c][i]: 900
+post_lut_coded_value[c][i]: 1023 post_lut_target_value[c][i]: 1023
+
+post_lut_num_val_minus1[c]: 1
+post_lut_coded_value[c][i]:    0 post_lut_target_value[c][i]:    0
+post_lut_coded_value[c][i]: 1023 post_lut_target_value[c][i]: 1023
+
+post_lut_num_val_minus1[c]: 1
+post_lut_coded_value[c][i]:    0 post_lut_target_value[c][i]:    0
+post_lut_coded_value[c][i]: 1023 post_lut_target_value[c][i]: 1023

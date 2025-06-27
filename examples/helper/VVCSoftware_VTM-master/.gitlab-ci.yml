@@ -1,0 +1,79 @@
+stages:
+   - build
+
+.build_template:
+   stage: build
+   script:
+      - make realclean
+      - make all
+   only:
+      refs:
+         - master
+         - merge_requests
+      variables:
+         - $CI_PROJECT_URL == 'https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM'
+         - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'master'
+
+.build_template_linux:
+   extends: .build_template
+   script:
+      - make realclean
+      - make all
+      - make realclean
+      - make release high-bitdepth=true
+      - make realclean
+      - make linuxbuild enable-tracing=true
+
+build_macos:
+   extends: .build_template
+   tags:
+      - macos
+
+build_macos_arm:
+   extends: .build_template
+   tags:
+      - macos-arm
+
+build_ubuntu2004:
+   extends: .build_template_linux
+   tags:
+      - ubuntu2004
+
+build_ubuntu2204:
+   extends: .build_template_linux
+   tags:
+      - ubuntu2204
+
+build_ubuntu2204-gcc12:
+   extends: .build_template
+   script:
+      - make realclean
+      - make all toolset=gcc-12
+      - make realclean
+      - make release high-bitdepth=true toolset=gcc-12
+      - make realclean
+      - make linuxbuild enable-tracing=true toolset=gcc-12
+   tags:
+      - ubuntu2204-gcc12
+
+build_vc191x:
+   extends: .build_template
+   tags:
+      - vc191x
+
+build_vc192x:
+   extends: .build_template
+   tags:
+      - vc192x
+
+build_software-manual:
+   extends: .build_template
+   script:
+      - cd doc
+      - make clean
+      - make
+   artifacts:
+    paths:
+      - doc/software-manual.pdf
+   tags:
+      - pdflatex

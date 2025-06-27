@@ -1,0 +1,8 @@
+# ignore these Latex files
+jctvcdoc.cls
+*.aux
+*.log
+*.lot
+*.out
+*.toc
+*~

@@ -150,3 +150,5 @@ examples/benchmarks/stg/old
 # examples/benchmarks/mpeg
 
 *.zip
+
+examples/helper/src/

@@ -1,0 +1,64 @@
+num_seis: 2
+num_regions: 2
+0 10 10 10 20
+1 20 20 30 40 
+payloadType: 142
+colour_remap_id: 0
+colour_remap_cancel_flag: 0
+colour_remap_persistence_flag: 1
+colour_remap_video_signal_info_present_flag: 1
+colour_remap_full_range_flag: 0
+colour_remap_primaries: 9
+colour_remap_transfer_function: 16
+colour_remap_matrix_coefficients: 9
+
+colour_remap_input_bit_depth: 10
+colour_remap_bit_depth: 10
+
+pre_lut_num_val_minus1[c]: 1
+pre_lut_coded_value[c][i]:   64   pre_lut_target_value[c][i]:   64
+pre_lut_coded_value[c][i]:  940   pre_lut_target_value[c][i]:  500
+
+pre_lut_num_val_minus1[c]: 1
+pre_lut_coded_value[c][i]:   64   pre_lut_target_value[c][i]:  128
+pre_lut_coded_value[c][i]:  960   pre_lut_target_value[c][i]:  896
+
+pre_lut_num_val_minus1[c]: 1
+pre_lut_coded_value[c][i]:   64   pre_lut_target_value[c][i]:  192
+pre_lut_coded_value[c][i]:  960   pre_lut_target_value[c][i]:  832
+
+colour_remap_matrix_present_flag: 0
+
+post_lut_num_val_minus1[c]: 1
+post_lut_coded_value[c][i]:  64   post_lut_target_value[c][i]:    64
+post_lut_coded_value[c][i]:  500   post_lut_target_value[c][i]:  940
+
+post_lut_num_val_minus1[c]: 1
+post_lut_coded_value[c][i]:  128   post_lut_target_value[c][i]:   64
+post_lut_coded_value[c][i]:  896   post_lut_target_value[c][i]:  960
+
+post_lut_num_val_minus1[c]: 1
+post_lut_coded_value[c][i]:  192   post_lut_target_value[c][i]:   64
+post_lut_coded_value[c][i]:  832   post_lut_target_value[c][i]:  960
+
+
+num_regions: 2
+3 10 10 30 20
+1 20 20 30 40 
+payloadType: 149
+SEICCVCancelFlag                        : 0
+SEICCVPersistenceFlag                   : 1
+SEICCVPrimariesPresent                  : 1
+m_ccvSEIPrimariesX0                     : 0.300
+m_ccvSEIPrimariesY0                     : 0.600
+m_ccvSEIPrimariesX1                     : 0.150
+m_ccvSEIPrimariesY1                     : 0.060
+m_ccvSEIPrimariesX2                     : 0.640
+m_ccvSEIPrimariesY2                     : 0.330
+SEICCVMinLuminanceValuePresent          : 1
+SEICCVMinLuminanceValue                 : 0.0
+SEICCVMaxLuminanceValuePresent          : 1
+SEICCVMaxLuminanceValue                 : 0.1
+SEICCVAvgLuminanceValuePresent          : 1
+SEICCVAvgLuminanceValue                 : 0.01
+
