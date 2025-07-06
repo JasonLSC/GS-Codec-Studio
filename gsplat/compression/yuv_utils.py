@@ -49,8 +49,6 @@ def _save_tensor_to_yuv(video: torch.Tensor,
             u_plane = frame[..., 1] # Shape: (H, W)
             v_plane = frame[..., 2] # Shape: (H, W)
 
-            
-
             if chroma_subsampling == "444":
                 # Write U plane (HxW)
                 f.write(u_plane.tobytes())
@@ -222,7 +220,7 @@ def _load_yuv_to_tensor(
         height: int,
         width: int,
         pix_fmt: Literal["yuv420p", "yuv444p", "yuv400p"],
-        bit_depth: int = 10 # The Default bit depth of the Decoded YUV file
+        bit_depth: int = 8 # The Default bit depth of the Decoded YUV file. 250705, sicheng: change 10 to 8. seems like the decoded pixfmt from ffmpeg is 8bit.
 ) -> Tensor:
     """
     Load a raw YUV file into a PyTorch tensor.

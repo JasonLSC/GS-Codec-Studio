@@ -1118,14 +1118,14 @@ if __name__ == "__main__":
                 compression_cfg=VideoCompressionConfig(
                     qp={
                         "means": -1,
-                        "opacities": 16,
-                        "quats": 22,
-                        "scales": 22,
-                        "sh0": 16,
+                        "opacities": 4,
+                        "quats": 4,
+                        "scales": 4,
+                        "sh0": 4,
                         "shN": {
-                            "sh1": 28,
-                            "sh2": 34,
-                            "sh3": 40
+                            "sh1": 4,
+                            "sh2": 4,
+                            "sh3": 4
                         }
                     }
                 )

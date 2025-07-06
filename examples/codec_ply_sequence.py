@@ -4,6 +4,7 @@ import os
 import time
 import shutil
 import glob
+import subprocess
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -93,7 +94,6 @@ def default_qp_values() -> Dict[str, Union[int, Dict[str, Any]]]:
 
 def default_attribute_configs() -> Dict[str, List[str]]:
     """default attribute configs"""
-    # GPCC highest quality configuration
     return {
         "means": {"qp": -1, "pix_fmt": "yuv444p"},
         "opacities": {"qp": 22, "pix_fmt": "yuv400p"},
@@ -149,7 +149,7 @@ class SeqYUVCodecConfig(CompressionConfig):
         default_factory=lambda: {
             "means": False,
             "scales": False,
-            "quats": False,
+            "quats": True, # always normalize quats
             "opacities": False,
             "sh0": False,
             "shN": False
@@ -528,8 +528,8 @@ class Runner:
         return trainset_list, valset_list
  
     def video_encode(self, compress_dir):
-        """Entry for running video anchor compression."""
-        print("Running video anchor compression...")
+        """Entry for running video anchor encoding."""
+        print("Running video anchor encoding...")
 
         if os.path.exists(compress_dir):
             shutil.rmtree(compress_dir)
@@ -546,8 +546,8 @@ class Runner:
             self.compression_method.compress(gop_splats_list, compress_dir, gop_id)
    
     def video_decode(self, compress_dir):
-        """Entry for running video anchor compression."""
-        print("Running video anchor compression...")
+        """Entry for running video anchor decoding."""
+        print("Running video anchor decoding...")
 
         if not os.path.exists(compress_dir):
             raise FileNotFoundError(f"Compression directory {compress_dir} does not exist. Please run video_encode first.")
@@ -583,7 +583,6 @@ class Runner:
             gop_start_frame_id = gop_id * self.cfg.gop_size
             gop_end_frame_id = min(gop_start_frame_id + self.cfg.gop_size, self.frame_num)
 
-    
         # decompress
         video_splats_c = self.compression_method.decompress(compress_dir, gop_id)
         splats_list_c = self.compression_method.deorganize(video_splats_c)
@@ -595,7 +594,6 @@ class Runner:
     def pcc_compress(self, compress_dir):
         """Entry for running pc anchor compression."""
         print("Running pc anchor compression...")
-        import subprocess
 
         intermediate_dir = f"{cfg.result_dir}/intermediate"
         log_dir = f"{cfg.result_dir}/log"
@@ -847,8 +845,6 @@ class Runner:
 
         return seq_stats
 
-        return seq_stats
-
     def eval_pngs_with_gsc_ctc_metrics(self, ):
         from helper.mpeg_gsc.gsc_metric import run_QMIV_metric_for_pngs, run_LPIPS_for_pngs
         from pathlib import Path
@@ -990,9 +986,14 @@ class Runner:
                     f'-c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium '
                     f'-profile:v high -level 4.1 -movflags +faststart "{self.cfg.result_dir}/renders/{stage}_testv{test_view_id:03d}.mp4"')
                 
-                print(f"Running: {cmd}")
-                os.system(cmd)
-                print(f"Video created for {stage}, test view {test_view_id}")
+                try:
+                    subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e:
+                    print(f"Error running ffmpeg command for {stage}, test view {test_view_id}:")
+                    print(f"Command: {cmd}")
+                    print(f"Error output: {e.stderr}")
+
+                # print(f"Video created for {stage}, test view {test_view_id}")
 
                 # png sequence to yuv for MPEG GSC metrics (not used for now)
                 # cmd = (f'ffmpeg -framerate 30 -i "{self.cfg.result_dir}/renders/{stage}_frame%03d_testv{test_view_id:03d}.png" '
@@ -1061,9 +1062,9 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
         shutil.rmtree(compress_dir)
     os.makedirs(compress_dir)
 
-    if cfg.anchor_type == "video":
+    if cfg.anchor_type == "video": # TODO: change "video" to "video_deprecated"
         splats_list_c = runner.compress(compress_dir)
-    elif cfg.anchor_type == "video_codec":
+    elif cfg.anchor_type == "video_codec": # TODO: change "video_codec" to "video"
         runner.video_encode(compress_dir)
         splats_list_c = runner.video_decode(compress_dir)
     elif cfg.anchor_type == "pcc":
@@ -1096,89 +1097,112 @@ if __name__ == "__main__":
                         "opacities": False,
                         "quats": True,
                         "scales": False,
-                        "sh0": True,
-                        "shN": True,
+                        "sh0": False,
+                        "shN": False,
                     },
-                    qp={    
-                        "means": -1,    
-                        "opacities": 4,    
-                        "quats": 10,    
-                        "scales": 10,    
-                        "sh0": 4,    
-                        "shN": {    
-                            "sh1": 16,
-                            "sh2": 22,
-                            "sh3": 28
-                        }
-                    }
                 )
             )
         ),
-         "seq_yuv_codec_rp0": (
+        "rp0": (
             "Use SeqYUVCodec.",
             Config(
                 anchor_type="video_codec",
                 compression="seq_yuv_codec",
                 compression_cfg=SeqYUVCodecConfig(
-                    transform_attributes={
-                        "means": False,
-                        "opacities": False,
-                        "quats": True,
-                        "scales": False,
-                        "sh0": True,
-                        "shN": True,
-                    },
-                    qp={    
-                        "means": -1,    
-                        "opacities": 4,    
-                        "quats": 10,    
-                        "scales": 10,    
-                        "sh0": 4,    
-                        "shN": {    
-                            "sh1": 16,
-                            "sh2": 22,
-                            "sh3": 28
-                        }
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 4, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 4, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 4, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 4, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 4, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 4, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 4, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 4, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
                     }
                 )
             )
         ),
-         "seq_yuv_compression_newqp_rp3": (
-            "Use SeqYUVCompression.",
+        "rp1": (
+            "Use SeqYUVCodec.",
             Config(
-                compression="seq_yuv",
-                compression_cfg=VideoCompressionConfig(
-                    attribute_codec_registry=AttributeCodecs(
-                        means=CodecConfig("_compress_video_hevc_16bit", "_decompress_video_hevc_16bit_opencv"),
-                        quats=CodecConfig("_compress_quats_video_hevc", "_decompress_quats_video_hevc_opencv"),
-                        scales=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
-                        opacities=CodecConfig("_compress_video_hevc", "_decompress_video_hevc_opencv"),
-                        sh0=CodecConfig("_compress_video_yuv_hevc", "_decompress_video_yuv_hevc"),
-                        shN=CodecConfig("_compress_shN_video_hevc", "_decompress_shN_video_hevc_opencv"),
-                    ),
-                    transform_attributes={
-                        "means": False,
-                        "opacities": False,
-                        "quats": True,
-                        "scales": False,
-                        "sh0": True,
-                        "shN": True,
-                    },
-                    qp={
-                        "means": -1,
-                        "opacities": 16,
-                        "quats": 22,
-                        "scales": 22,
-                        "sh0": 10,
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 4, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 10, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 10, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 10, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 4, "pix_fmt": "yuv444p"},
                         "shN": {
-                            "sh1": 28,
-                            "sh2": 34,
-                            "sh3": 40
-                        }
+                            "sh1": {"qp": 16, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 22, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 28, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
                     }
                 )
-            )           
-        )
+            )
+        ),
+        "rp2": (
+            "Use SeqYUVCodec.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 10, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 16, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 16, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 16, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 10, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 22, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 28, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 34, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
+        "rp3": (
+            "Use SeqYUVCodec.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 16, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 22, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 22, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 22, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 16, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 28, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 34, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 40, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
     }
     cfg = tyro.extras.overridable_config_cli(configs)
 

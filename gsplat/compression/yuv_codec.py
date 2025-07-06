@@ -506,8 +506,6 @@ class SeqYUVCodec:
         config_params = {**common_config, **specific_config}
         return config_params
         
-    
-    ### <<< REFACTOR: Main compress/decompress flows are now clear and correct ###
     def compress(self, splats_list: List[Dict[str, Tensor]], compress_dir: Path, gop_id: int) -> None:
         """
         Compresses a list of splat frames.
@@ -551,7 +549,7 @@ class SeqYUVCodec:
         video_codec = VideoCodec(
             video_codec_type=self.video_codec_type,
         )
-        yuv_files = [f for f in yuv_dir.glob("*.yuv")]
+        yuv_files = sorted([f for f in yuv_dir.glob("*.yuv")])
         if not yuv_files:
             logging.error(f"No YUV files found in {yuv_dir}. Cannot compress.")
             return
@@ -590,7 +588,7 @@ class SeqYUVCodec:
         video_codec = VideoCodec(
             video_codec_type=self.video_codec_type,
         )
-        bin_files = [f for f in compress_dir.glob("*.mp4")]
+        bin_files = [f for f in compress_dir.glob("*.mp4")] # sicheng: why mp4?
         if not bin_files:
             logging.error(f"No compressed files found in {compress_dir}. Cannot decompress.")
             return []
