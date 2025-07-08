@@ -24,9 +24,9 @@ VIDEO_CODEC_PATHS = {
     "hm": {
         "encoder": "helper/HM-master/bin/TAppEncoderStatic",
         "decoder": "helper/HM-master/bin/TAppDecoderStatic",
-        "intra_config_path": "helper/HM-master/cfg/encoder_intra_main_rext.cfg",
-        "gopsize16_config_path": "helper/HM-master/cfg/encoder_randomaccess_main_rext.cfg",
-        "lossless_config_path": "helper/HM-master/cfg/lossless/lossless.cfg",
+        "intra_config_path": "helper/hm_cfg/encoder_intra_main_rext_bit8_test.cfg",
+        # "gopsize16_config_path": "helper/HM-master/cfg/encoder_randomaccess_main_rext.cfg",
+        "lossless_config_path": "helper/hm_cfg/lossless_bit8_test.cfg",
     },
     "ffmpeg": {
         "encoder": "ffmpeg",
@@ -201,7 +201,13 @@ class VideoCodec:
         if not chroma_format:
             raise ValueError(f"Unsupported pix_fmt for HM: {p['pix_fmt']}")
 
-        config_path = self.intra_config_path if p.get('use_all_intra') else self.gopsize16_config_path
+        # Use lossless config if qp < 0
+        if p['qp'] < 0:
+            config_path = self.lossless_config_path
+            qp_value = 4
+        else:
+            config_path = self.intra_config_path if p.get('use_all_intra') else self.gopsize16_config_path
+            qp_value = p['qp']
 
         cmd = [
             str(self.encoder_path),
@@ -210,7 +216,7 @@ class VideoCodec:
             '-b', str(o_path),
             '-wdt', str(p['width']),
             '-hgt', str(p['height']),
-            '-q', str(p['qp']),
+            '-q', str(qp_value),
             '-cf', chroma_format,
             '-fr', '30',
             '-f', str(p['frame_num']),

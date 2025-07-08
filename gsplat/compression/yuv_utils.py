@@ -220,7 +220,7 @@ def _load_yuv_to_tensor(
         height: int,
         width: int,
         pix_fmt: Literal["yuv420p", "yuv444p", "yuv400p"],
-        bit_depth: int = 8 # The Default bit depth of the Decoded YUV file. 250705, sicheng: change 10 to 8. seems like the decoded pixfmt from ffmpeg is 8bit.
+        bit_depth: int = 8 # The Default bit depth of the Decoded YUV file. 250705, sicheng: change 10 to 8. seems like the decoded pixfmt from **ffmpeg** is 8bit.
 ) -> Tensor:
     """
     Load a raw YUV file into a PyTorch tensor.

@@ -1103,6 +1103,31 @@ if __name__ == "__main__":
                 )
             )
         ),
+        "hm_debug": (
+            "Use SeqYUVCodec, and use HM to encode the yuv file.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 4, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 4, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 4, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 4, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 4, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 4, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 4, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 4, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
         "rp0": (
             "Use SeqYUVCodec.",
             Config(
