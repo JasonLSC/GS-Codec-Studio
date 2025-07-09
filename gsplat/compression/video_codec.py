@@ -24,9 +24,9 @@ VIDEO_CODEC_PATHS = {
     "hm": {
         "encoder": "helper/HM-master/bin/TAppEncoderStatic",
         "decoder": "helper/HM-master/bin/TAppDecoderStatic",
-        "intra_config_path": "helper/hm_cfg/encoder_intra_main_rext_bit8_test.cfg",
+        "intra_config_path": "helper/hm_cfg/intra_yuv444p.cfg",
         # "gopsize16_config_path": "helper/HM-master/cfg/encoder_randomaccess_main_rext.cfg",
-        "lossless_config_path": "helper/hm_cfg/lossless_bit8_test.cfg",
+        "lossless_config_path": "helper/hm_cfg/intra_lossless_bit8.cfg",
     },
     "ffmpeg": {
         "encoder": "ffmpeg",
@@ -217,9 +217,10 @@ class VideoCodec:
             '-wdt', str(p['width']),
             '-hgt', str(p['height']),
             '-q', str(qp_value),
-            '-cf', chroma_format,
+            '-cf', chroma_format, # output chroma format
             '-fr', '30',
             '-f', str(p['frame_num']),
+            f'--InputChromaFormat={chroma_format}', # input chroma format
         ]
         if p.get('all_intra', False):
             cmd.extend(['--IntraPeriod', '1'])
