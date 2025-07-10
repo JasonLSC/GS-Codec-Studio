@@ -162,6 +162,14 @@ def set_random_seed(seed: int):
     torch.backends.cudnn.benchmark = False
     os.environ['PYTHONHASHSEED'] = str(seed)
 
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception as e:
+        print(f"Could not use deterministic algorithms: {e}")
+
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
 def verify_random_seed(result_dir: str):
     """
     Verify random seed consistency by generating a checksum and save to file

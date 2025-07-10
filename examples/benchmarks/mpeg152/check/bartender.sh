@@ -9,6 +9,8 @@ frame_num=1
 # EXP_DIR=results/mpeg151/yuv_codec/${dataset}
 EXP_DIR=results/mpeg152/check/${dataset}
 
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
 # Function to run a single experiment
 run_experiment() {
     local gpu_id=$1
