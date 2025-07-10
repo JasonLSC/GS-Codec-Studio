@@ -52,6 +52,7 @@ def sort_splats(
     )
     sorted_indices = sorted_indices.squeeze().flatten()
     sorted_indices = shuffled_indices[sorted_indices]
+    print("final sorted_indices:", sorted_indices)
     for k, v in splats.items():
         splats[k] = v[sorted_indices]
     
