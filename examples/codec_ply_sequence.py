@@ -36,7 +36,7 @@ from typing_extensions import Literal, assert_never
 from gsplat import strategy
 from gsplat.compression.entropy_coding_compression import EntropyCodingCompression
 from gsplat.compression_simulation import simulation
-from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed, load_ply
+from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed, load_ply, verify_random_seed
 from lib_bilagrid import (
     BilateralGrid,
     slice,
@@ -428,7 +428,9 @@ class Runner:
     def __init__(
         self, local_rank: int, world_rank, world_size: int, cfg: Config
     ) -> None:
-        set_random_seed(42 + local_rank)
+        os.makedirs(cfg.result_dir, exist_ok=True)
+        set_random_seed(42)
+        verify_random_seed(cfg.result_dir)
 
         self.cfg = cfg
         self.world_rank = world_rank

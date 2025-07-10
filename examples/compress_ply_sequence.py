@@ -351,7 +351,7 @@ class Runner:
         # Where to dump results.
         os.makedirs(cfg.result_dir, exist_ok=True)
 
-        set_random_seed(42 + local_rank)
+        set_random_seed(42)
         verify_random_seed(cfg.result_dir)
 
         self.cfg = cfg
