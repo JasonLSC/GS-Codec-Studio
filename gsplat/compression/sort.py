@@ -44,6 +44,7 @@ def sort_splats(
     shuffled_indices = torch.randperm(
         params_to_sort.shape[0], device=params_to_sort.device
     )
+    print("shuffled_indices:", shuffled_indices)
     params_to_sort = params_to_sort[shuffled_indices]
     grid = params_to_sort.reshape((n_sidelen, n_sidelen, -1))
     _, sorted_indices = sort_with_plas(
