@@ -178,6 +178,7 @@ This project is developed by the following contributors:
 
 - Sicheng Li: jasonlisicheng@zju.edu.cn
 - Chengzhen Wu: chengzhenwu@zju.edu.cn
+- Zhiwei Zhu: zhuzhiwei21@zju.edu.cn
 
 If you have any questions about this project, please feel free to contact us.
 
