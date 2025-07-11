@@ -477,6 +477,11 @@ Void SEIReader::xReadSEImessage(SEIMessages& seis, const NalUnitType nalUnitType
   xTraceSEIMessageType((SEI::PayloadType)payloadType);
 #endif
 
+  if(payloadSize == 0)
+  {
+    return;
+  }
+
   /* extract the payload for this single SEI message.
    * This allows greater safety in erroneous parsing of an SEI message
    * from affecting subsequent messages.

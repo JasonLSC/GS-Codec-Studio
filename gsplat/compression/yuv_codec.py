@@ -394,22 +394,22 @@ class SeqYUVCodec:
         padded_splats_videos = self._pad_attr_seq(seq_attr_dict, n_pad)
         
         # random access
-        if not self.use_all_intra:
-            logging.info("Using random access mode for compression.")
-            if self.use_sort:
-                # sort the splats with the first frame index
-                sorted_indices = self._sort_with_frame_index(splats_list, n_pad)
-                # use indices to sort the sequences of attributes
-                for attr_name, padded_splats_video in padded_splats_videos.items():
-                    padded_splats_videos[attr_name] = padded_splats_video[:, sorted_indices, ...]
-        else: # all intra
-            logging.info("Using all intra mode for compression.")
-            if self.use_sort:
-                for fr_id, _ in enumerate(splats_list):
-                    sorted_indices = self._sort_with_frame_index(splats_list, n_pad, fr_id)
+        # if not self.use_all_intra:
+            # logging.info("Using random access mode for compression.")
+        if self.use_sort:
+            # sort the splats with the first frame index
+            sorted_indices = self._sort_with_frame_index(splats_list, n_pad)
+            # use indices to sort the sequences of attributes
+            for attr_name, padded_splats_video in padded_splats_videos.items():
+                padded_splats_videos[attr_name] = padded_splats_video[:, sorted_indices, ...]
+        # else: # all intra
+        #     # logging.info("Using all intra mode for compression.")
+        #     if self.use_sort:
+        #         for fr_id, _ in enumerate(splats_list):
+        #             sorted_indices = self._sort_with_frame_index(splats_list, n_pad, fr_id)
 
-                    for attr_name, padded_splats_video in padded_splats_videos.items():
-                        padded_splats_video[fr_id] = padded_splats_video[fr_id][sorted_indices, ...]
+        #             for attr_name, padded_splats_video in padded_splats_videos.items():
+        #                 padded_splats_video[fr_id] = padded_splats_video[fr_id][sorted_indices, ...]
 
         # reshape to 2d sequences
         self.splats_videos = {}

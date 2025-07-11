@@ -52,15 +52,71 @@ pip install third_party/python-fpnge-master
 pip install third_party/gridencoder
 ```
 
-Before we start running scripts, we also need to install library for [vector quantization](https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) and [plas sorting](https://github.com/fraunhoferhhi/PLAS).
+If you are interested in post-training compression, you also need to install library for [vector quantization](https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) and [plas sorting](https://github.com/fraunhoferhhi/PLAS), before running scripts.
 ```bash
 # refer to https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install to see how to install TorchPQ
+
+# install original implementation of PLAS
 pip install git+https://github.com/fraunhoferhhi/PLAS.git
 ```
 
-### Compress Tracked Gaussian Splats Sequences via Video Codec (Video-based Anchor)
 
-If you're interested in MPEG Gaussian Splats Coding, we have implemented a simple coding method for compressing temporally tracked Gaussian Splats using Video Codec as the core component. You can try this method using the script below.
+
+### Compress Tracked Gaussian Splats Sequences via Video Codec (Video-based Anchor)
+If you're interested in MPEG Gaussian Splats Coding, we have implemented a simple coding method for compressing temporally tracked Gaussian Splats using Video Codec as the core component. The figure shows the pipeline of video-based anchor.
+![Pipeline of video-based anchor](assets/video_anchor_pipeline.png)
+The key idea is 1) to organize the sequence of Gaussian Splats into multiple attribute videos of Gaussian Splats, and 2) to use video codec to compress these attribute videos. If you want to reproduce our latest results, please checkout below **updated version of guidance**.
+<details open>
+<summary>Updated version of guidance</summary>
+
+**Preparation**
+
+1.Install modified PLAS:
+
+[Original PLAS](https://github.com/fraunhoferhhi/PLAS) can not guarantee the identical sorted results on different types of GPU (e.g. Nvidia RTX 3090 vs. 3080 Ti), even given the exactly same input data, same random seeds. This issue stems from the `torch.randperm` function. We make a workaround on this issue, and upload the modified code to the [repository](https://github.com/JasonLSC/PLAS).
+
+So if you want to reproduce the identical sorted results, please install modified PLAS:
+```
+# If you have installed original PLAS, you need to uninstall it and install modified version.
+pip install git+https://github.com/JasonLSC/PLAS
+```
+
+2.Compile video codec:
+
+We have placed the source code of [HM](https://vcgit.hhi.fraunhofer.de/jvet/HM/-/tree/master?ref_type=heads) under the path `examples/helper/HM_master`. Then you just need to compile it:
+
+```
+cd examples/helper/HM_master
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DHIGH_BITDEPTH=ON
+make -j
+```
+
+**Scripts**
+
+Go back to the example folder.
+
+```
+cd ../../../
+```
+
+Run the scripts:
+
+```
+bash benchmarks/mpeg152/1f_vid_hm/bartender.sh
+```
+
+**Note**: 
+Before using the scripts mentioned above, please note the following:
+1. Please modify the input parameters ``--ply_dir``, ``--data_dir`` in the script to match your local paths.
+
+</details>
+
+<details>
+    <summary>Old version of guidance</summary>
+
+You can try this method using the script below.
 ```bash
 cd examples
 bash benchmarks/mpeg/video_anchor_bench.sh
@@ -78,6 +134,7 @@ bash benchmarks/mpeg/pcc_anchor_bench.sh
 Before using the scripts mentioned above, please note the following:
 1. Please modify the input parameters ``--ply_dir``, ``--data_dir``, and ``--result_dir`` in the script to match your local paths.
 2. These experiments involve third-party programs, including point cloud codec and QMIV (quality evaluation software). If you need newer versions, you can compile them yourself and replace the current executables under ``examples/helper``.
+</details>
 
 ### Static Gaussian Splats Training and Compression
 
