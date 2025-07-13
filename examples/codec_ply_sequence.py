@@ -419,6 +419,8 @@ class Config:
     data_dir: str = ""
     # frame num
     frame_num: int = 1
+    # ply filename
+    ply_filename: Optional[str] = None
     # anchor type
     anchor_type: Literal["video","video_codec" "pcc"] = "video"
     # GOP size
@@ -469,7 +471,7 @@ class Runner:
         self.frame_num = cfg.frame_num
 
         # load ply sequences
-        self.splats_list = self.load_ply_sequences(cfg.ply_dir, cfg.frame_num)
+        self.splats_list = self.load_ply_sequences(cfg.ply_dir, cfg.frame_num, cfg.ply_filename)
 
         # load dataset
         self.trainset_list, self.valset_list = self.set_up_datasets(cfg.data_dir, cfg.frame_num, cfg)
@@ -486,31 +488,66 @@ class Runner:
             raise ValueError(f"Unknown compression method: {cfg.compression}")
 
     def load_ply_sequences(
-        self, ply_dir: str, frame_num: int
+        self, ply_dir: str, frame_num: int, ply_filename: Optional[str] = None
     ) -> List[torch.nn.ParameterDict]:
-        self.ply_filename_list = sorted(glob.glob(os.path.join(ply_dir, "*.ply")))
+        assert frame_num > 0, "frame_num must be greater than 0"
 
         splats_list = []
-        for filename in tqdm(self.ply_filename_list[:frame_num], desc="Loading .ply file"):
-            splats = load_ply(filename)
-            splats_list.append(splats.to("cuda"))
+        if frame_num > 1:
+            self.ply_filename_list = sorted(glob.glob(os.path.join(ply_dir, "*.ply")))
+
+            for filename in tqdm(self.ply_filename_list[:frame_num], desc="Loading .ply file"):
+                splats = load_ply(filename)
+                splats_list.append(splats.to("cuda"))
+        else:
+            assert ply_filename is not None, "ply_filename must be provided if frame_num is 1"
+            splats = load_ply(ply_filename)
+        
+        splats_list = [splats.to("cuda")]
         
         return splats_list
     
     def set_up_datasets(
         self, data_dir: str, frame_num: int, cfg: Config
     ) -> Tuple[List[Dataset], List[Dataset]]:
-        all_items = sorted(glob.glob(os.path.join(data_dir, "*")))
-        folders = [item for item in all_items if os.path.isdir(item)]
+        assert frame_num > 0, "frame_num must be greater than 0"
 
         trainset_list = []
         valset_list = []
-        for folder in tqdm(folders[:frame_num], desc="Loading colmap results"):
+        if frame_num > 1:
+            print(f"Loading multiple frame colmap data from {data_dir}")
+            all_items = sorted(glob.glob(os.path.join(data_dir, "*")))
+            folders = [item for item in all_items if os.path.isdir(item)]
+
+            for folder in tqdm(folders[:frame_num], desc="Loading colmap results"):
+                parser = Parser(
+                    data_dir=folder,
+                    factor=cfg.data_factor,
+                    normalize=cfg.normalize_world_space,
+                    test_every=cfg.test_every,
+                )
+                trainset = GSCDataset(
+                    parser,
+                    split="train",
+                    patch_size=cfg.patch_size,
+                    load_depths=cfg.depth_loss,
+                    test_view_ids=cfg.test_view_id,
+                )
+                valset = GSCDataset(
+                    parser, 
+                    split="val", 
+                    test_view_ids=cfg.test_view_id,)
+                
+                trainset_list.append(trainset)
+                valset_list.append(valset)
+        else:
+            print(f"Loading single frame colmap data from {data_dir}")
+            folder = data_dir
             parser = Parser(
-                data_dir=folder,
-                factor=cfg.data_factor,
-                normalize=cfg.normalize_world_space,
-                test_every=cfg.test_every,
+                    data_dir=folder,
+                    factor=cfg.data_factor,
+                    normalize=cfg.normalize_world_space,
+                    test_every=cfg.test_every,
             )
             trainset = GSCDataset(
                 parser,
@@ -523,10 +560,9 @@ class Runner:
                 parser, 
                 split="val", 
                 test_view_ids=cfg.test_view_id,)
-            
             trainset_list.append(trainset)
             valset_list.append(valset)
-        
+
         return trainset_list, valset_list
  
     def video_encode(self, compress_dir):
