@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Define the list of GPU IDs to use
-GPU_IDS=(4 5 6 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+GPU_IDS=(1 2 3 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
-dataset=bartender
-frame_num=32
+dataset=man_with_fruit
+frame_num=1
 
 EXP_DIR=results/mpeg152/1f_vid_hm/${dataset}
 
@@ -17,15 +17,16 @@ run_experiment() {
     
     CUDA_VISIBLE_DEVICES=${gpu_id} python codec_ply_sequence.py rp${rp_id} \
         --data_factor 1 \
-        --ply_dir data/GSC_splats/m71763_${dataset}_stable/track \
-        --data_dir data/GSC_splats/m71763_${dataset}_stable/colmap_data \
+        --ply_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/ply/ \
+        --ply_filename data/GSC_splats/m71903_bust_dataset/man_with_fruit/ply/0081.ply \
+        --data_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/colmap_data/000081 \
         --result_dir ${EXP_DIR}/rp${rp_id} \
         --frame_num ${frame_num} \
         --gop_size 16 \
         --lpips_net vgg \
         --no-normalize_world_space \
         --scene_type GSC \
-        --test_view_id {0..20} \
+        --test_view_id {0..23} \
         --compression_cfg.use_sort \
         --compression_cfg.sort_type plas \
         --compression_cfg.use_all_intra \

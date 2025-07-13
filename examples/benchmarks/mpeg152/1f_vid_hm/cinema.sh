@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Define the list of GPU IDs to use
-GPU_IDS=(4 5 6 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+GPU_IDS=(0 1 2 3)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
-dataset=bartender
+dataset=cinema
 frame_num=32
 
 EXP_DIR=results/mpeg152/1f_vid_hm/${dataset}
