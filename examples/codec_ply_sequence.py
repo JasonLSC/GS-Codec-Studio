@@ -415,12 +415,14 @@ class Config:
     ### specific for I-3DGS compression
     # folder containing plys
     ply_dir: str = ""
+    # ply filename, only used when frame_num is 1
+    ply_filename: Optional[str] = None
     # folder containing colmap
     data_dir: str = ""
+    # folder containing masks, only used when object-centric content in MPEG GSC
+    mask_dir: Optional[str] = None
     # frame num
     frame_num: int = 1
-    # ply filename
-    ply_filename: Optional[str] = None
     # anchor type
     anchor_type: Literal["video","video_codec" "pcc"] = "video"
     # GOP size
@@ -525,6 +527,7 @@ class Runner:
                     factor=cfg.data_factor,
                     normalize=cfg.normalize_world_space,
                     test_every=cfg.test_every,
+                    mask_dir=cfg.mask_dir,
                 )
                 trainset = GSCDataset(
                     parser,
@@ -544,10 +547,11 @@ class Runner:
             print(f"Loading single frame colmap data from {data_dir}")
             folder = data_dir
             parser = Parser(
-                    data_dir=folder,
-                    factor=cfg.data_factor,
-                    normalize=cfg.normalize_world_space,
-                    test_every=cfg.test_every,
+                data_dir=folder,
+                factor=cfg.data_factor,
+                normalize=cfg.normalize_world_space,
+                test_every=cfg.test_every,
+                mask_dir=cfg.mask_dir,
             )
             trainset = GSCDataset(
                 parser,
@@ -839,7 +843,11 @@ class Runner:
                     colors_p = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                     metrics["ssim"].append(self.ssim(colors_p, pixels_p))
-                    metrics["lpips"].append(self.lpips(colors_p, pixels_p))            
+                    try:
+                        metrics["lpips"].append(self.lpips(colors_p, pixels_p))
+                    except Exception as e:
+                        print(f"Error in LPIPS calculation: {e}")
+                        metrics["lpips"].append(torch.tensor(float('nan')))
         
             if world_rank == 0:
                 ellipse_time /= len(valloader)

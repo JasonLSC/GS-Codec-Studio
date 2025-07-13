@@ -17,7 +17,7 @@ run_experiment() {
     
     CUDA_VISIBLE_DEVICES=${gpu_id} python codec_ply_sequence.py rp${rp_id} \
         --data_factor 1 \
-        --ply_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/ply/ \
+        --ply_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/ply \
         --ply_filename data/GSC_splats/m71903_bust_dataset/man_with_fruit/ply/0081.ply \
         --data_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/colmap_data/000081 \
         --result_dir ${EXP_DIR}/rp${rp_id} \

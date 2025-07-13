@@ -267,7 +267,11 @@ def run_LPIPS_for_pngs(
             ref_batch = ref_batch.to(device, non_blocking=True)
             
             # Calculate LPIPS
-            lpips_values = lpips_calculator(render_batch, ref_batch)
+            try:
+                lpips_values = lpips_calculator(render_batch, ref_batch)
+            except Exception as e:
+                print(f"Error in LPIPS calculation: {e}")
+                lpips_values = torch.tensor(float('nan'), device=device)
             
             # Convert to Python float and append
             lpips_values_list.append(lpips_values.item())
@@ -276,6 +280,7 @@ def run_LPIPS_for_pngs(
             torch.cuda.empty_cache()
     
     # Calculate mean
+    # If any value is NaN, the mean will be NaN automatically
     lpips_mean = sum(lpips_values_list) / len(lpips_values_list)
     
     return {"LPIPS": lpips_mean}
