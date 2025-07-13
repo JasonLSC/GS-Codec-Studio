@@ -411,6 +411,8 @@ class Config:
     test_view_id: Optional[Union[List[int], Literal["all"]]] = None
 
     lpips_net: Literal["vgg", "alex"] = "alex"
+    # Enable LPIPS calculation
+    with_lpips: bool = True
 
     ### specific for I-3DGS compression
     # folder containing plys
@@ -457,17 +459,20 @@ class Runner:
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
 
-        if cfg.lpips_net == "alex":
-            self.lpips = LearnedPerceptualImagePatchSimilarity(
-                net_type="alex", normalize=True
-            ).to(self.device)
-        elif cfg.lpips_net == "vgg":
-            # The 3DGS official repo uses lpips vgg, which is equivalent with the following:
-            self.lpips = LearnedPerceptualImagePatchSimilarity(
-                net_type="vgg", normalize=False
-            ).to(self.device)
+        if cfg.with_lpips:
+            if cfg.lpips_net == "alex":
+                self.lpips = LearnedPerceptualImagePatchSimilarity(
+                    net_type="alex", normalize=True
+                ).to(self.device)
+            elif cfg.lpips_net == "vgg":
+                # The 3DGS official repo uses lpips vgg, which is equivalent with the following:
+                self.lpips = LearnedPerceptualImagePatchSimilarity(
+                    net_type="vgg", normalize=False
+                ).to(self.device)
+            else:
+                raise ValueError(f"Unknown LPIPS network: {cfg.lpips_net}")
         else:
-            raise ValueError(f"Unknown LPIPS network: {cfg.lpips_net}")
+            self.lpips = None
 
         # frame num
         self.frame_num = cfg.frame_num
@@ -843,10 +848,13 @@ class Runner:
                     colors_p = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                     metrics["ssim"].append(self.ssim(colors_p, pixels_p))
-                    try:
-                        metrics["lpips"].append(self.lpips(colors_p, pixels_p))
-                    except Exception as e:
-                        print(f"Error in LPIPS calculation: {e}")
+                    if self.cfg.with_lpips:
+                        try:
+                            metrics["lpips"].append(self.lpips(colors_p, pixels_p))
+                        except Exception as e:
+                            print(f"Error in LPIPS calculation: {e}")
+                            metrics["lpips"].append(torch.tensor(float('nan')))
+                    else:
                         metrics["lpips"].append(torch.tensor(float('nan')))
         
             if world_rank == 0:
@@ -902,9 +910,10 @@ class Runner:
         gsc_metrics_across_test_views = defaultdict(dict)
         
         # Create progress bar
-        pbar = tqdm(range(len(self.cfg.test_view_id)), desc="Calculating quality metrics")
+        test_view_ids = self.valset_list[0].indices
+        pbar = tqdm(range(len(test_view_ids)), desc="Calculating quality metrics")
         
-        for i, test_view_id in enumerate(self.cfg.test_view_id):
+        for i, test_view_id in enumerate(test_view_ids):
             render_png_filename = Path(f"{self.cfg.result_dir}/renders/compress_frame{{:03d}}_testv{test_view_id:03d}.png")
             ref_png_filename = Path(f"{self.cfg.result_dir}/renders/val_frame{{:03d}}_testv{test_view_id:03d}.png")
             saved_log_file = Path(f"{self.cfg.result_dir}/log/QMIV_testv{test_view_id:03d}.txt")
@@ -919,13 +928,17 @@ class Runner:
             qmiv_time = time.time() - start_time
             
             # Record LPIPS timing
-            start_time = time.time()
-            lpips_dict = run_LPIPS_for_pngs(render_png_filename,
-                                        ref_png_filename,
-                                        lpips_calculator=self.lpips)
-            lpips_time = time.time() - start_time
+            if self.cfg.with_lpips:
+                start_time = time.time()
+                lpips_dict = run_LPIPS_for_pngs(render_png_filename,
+                                            ref_png_filename,
+                                            lpips_calculator=self.lpips)
+                lpips_time = time.time() - start_time
+                gsc_metrics.update(lpips_dict)
+            else:
+                lpips_time = 0.0
+                gsc_metrics.update({"LPIPS": float('nan')})
             
-            gsc_metrics.update(lpips_dict)
             gsc_metrics_across_test_views[f"testv{test_view_id:03d}"] = gsc_metrics
             
             # Update progress bar with timing info
