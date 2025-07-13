@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, Literal
 from typing_extensions import assert_never
 
 import cv2
@@ -410,7 +410,7 @@ class GSCDataset(Dataset):
         split: str = "train",
         patch_size: Optional[int] = None,
         load_depths: bool = False,
-        test_view_ids: Optional[List[int]] = None
+        test_view_ids: Optional[Union[List[int], Literal["all"]]] = None
     ):
         # Call parent class constructor without setting indices
         super().__init__(parser, split, patch_size, load_depths)
@@ -421,8 +421,12 @@ class GSCDataset(Dataset):
             
         # Convert indices to sets for efficient lookup
         all_indices = set(range(len(self.parser.image_names)))
-        test_indices = set(test_view_ids)
-        train_indices = all_indices - test_indices  # Set difference operation
+        if test_view_ids == "all":
+            test_indices = all_indices
+            train_indices = set()
+        else:
+            test_indices = set(test_view_ids)
+            train_indices = all_indices - test_indices  # Set difference operation
         
         # Select indices based on split
         if split == "train":

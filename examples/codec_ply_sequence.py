@@ -408,7 +408,7 @@ class Config:
     # Scene type
     scene_type: Literal["GSC", "default"] = "default"
     # Test view id
-    test_view_id: Optional[List[int]] = None
+    test_view_id: Optional[Union[List[int], Literal["all"]]] = None
 
     lpips_net: Literal["vgg", "alex"] = "alex"
 
