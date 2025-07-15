@@ -509,8 +509,7 @@ class Runner:
         else:
             assert ply_filename is not None, "ply_filename must be provided if frame_num is 1"
             splats = load_ply(ply_filename)
-        
-        splats_list = [splats.to("cuda")]
+            splats_list = [splats.to("cuda")]
         
         return splats_list
     
