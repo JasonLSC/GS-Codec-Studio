@@ -152,3 +152,4 @@ examples/benchmarks/stg/old
 *.zip
 
 examples/helper/src/
+!examples/helper/src/HM-18.0/bin

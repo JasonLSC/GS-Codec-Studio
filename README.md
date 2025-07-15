@@ -82,8 +82,8 @@ pip install git+https://github.com/JasonLSC/PLAS
 ```
 
 2.Compile video codec:
-
-We have placed the source code of [HM-18.0](https://vcgit.hhi.fraunhofer.de/jvet/HM/-/tree/HM-18.0?ref_type=tags) under the path `examples/helper/HM-18.0`. Then you just need to compile it:
+You can just use our pre-compiled executables under the path `examples/helper/HM-18.0`. 
+Or you also can place the source code of [HM-18.0](https://vcgit.hhi.fraunhofer.de/jvet/HM/-/tree/HM-18.0?ref_type=tags) under the path `examples/helper/HM-18.0`. Then you just need to compile it:
 
 ```
 cd examples/helper/HM-18.0
@@ -93,7 +93,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j
 ```
 
-Note: Since the original code from HM-18.0 fails during compilation due to certain warnings, I added the line "set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-array-bounds")" in CMakeLists.txt to suppress this issue.
+Note: Since the original code from HM-18.0 fails during compilation due to certain warnings, I added the line `set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-array-bounds")` in CMakeLists.txt to suppress this issue.
 
 **Scripts**
 
