@@ -110,6 +110,10 @@ Before using the scripts mentioned above, please note the following:
 1. Please modify the input parameters ``--ply_dir``, ``--data_dir``, ``--ply_filename``(needed for single frame input), ``--masks``(needed for object-centric content) in the script to match your local paths.
 2. These experiments involve third-party programs, including QMIV (quality evaluation software). If you need newer versions, you can compile them yourself and replace the current executables under ``examples/helper``.
 
+**Experimental results collections**
+
+After successfully completing experiment of one scene (where one script corresponds to one scene), you can find the experimental results saved in CSV format in the results folder, e.g. ``examples/results/mpeg152/1f_vid_hm/<scene_name>``. The relevant data can be easily pasted into the MPEG GSC Excel Template.
+
 </details>
 
 <details>
