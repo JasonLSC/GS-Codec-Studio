@@ -1,0 +1,41 @@
+stages:
+   - build
+
+.build_template:
+   stage: build
+   script:
+      - make realclean
+      - make all
+   only:
+      refs:
+         - master
+         - merge_requests
+      variables:
+         - $CI_PROJECT_URL == 'https://vcgit.hhi.fraunhofer.de/jvet/HM'
+         - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'master'
+
+build_macos:
+   extends: .build_template
+   tags:
+      - macos
+
+build_ubuntu2204:
+   extends: .build_template
+   tags:
+      - ubuntu2204
+
+build_ubuntu2004:
+   extends: .build_template
+   tags:
+      - ubuntu2004
+
+build_vc191x:
+   extends: .build_template
+   tags:
+      - vc191x
+
+build_vc192x:
+   extends: .build_template
+   tags:
+      - vc192x
+

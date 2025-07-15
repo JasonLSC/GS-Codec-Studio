@@ -22,8 +22,8 @@ VIDEO_CODEC_PATHS = {
         "lossless_config_path": "helper/VVCSoftware_VTM-master/cfg/lossless/lossless.cfg",
     },
     "hm": {
-        "encoder": "helper/HM_master/bin/TAppEncoderStatic",
-        "decoder": "helper/HM_master/bin/TAppDecoderStatic",
+        "encoder": "helper/HM-18.0/bin/TAppEncoderStatic",
+        "decoder": "helper/HM-18.0/bin/TAppDecoderStatic",
         "intra_config_path": "helper/hm_cfg/intra_yuv444p.cfg",
         # "gopsize16_config_path": "helper/HM-master/cfg/encoder_randomaccess_main_rext.cfg",
         "lossless_config_path": "helper/hm_cfg/intra_lossless_bit8.cfg",

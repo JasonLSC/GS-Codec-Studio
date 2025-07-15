@@ -1,0 +1,13 @@
+dec.yuv
+rec.yuv
+str.bin
+/build/
+/bin/
+/lib/
+core
+deploy
+*.sdf
+*.suo
+*.pyc
+.vs/
+.vscode/
