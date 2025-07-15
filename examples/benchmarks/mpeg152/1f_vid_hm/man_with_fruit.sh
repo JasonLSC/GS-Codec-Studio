@@ -20,6 +20,7 @@ run_experiment() {
         --ply_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/ply \
         --ply_filename data/GSC_splats/m71903_bust_dataset/man_with_fruit/ply/0081.ply \
         --data_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/colmap_data/000081 \
+        --mask_dir data/GSC_splats/m71903_bust_dataset/man_with_fruit/colmap_data/000081/masks \
         --result_dir ${EXP_DIR}/rp${rp_id} \
         --frame_num ${frame_num} \
         --gop_size 16 \

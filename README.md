@@ -83,33 +83,32 @@ pip install git+https://github.com/JasonLSC/PLAS
 
 2.Compile video codec:
 
-We have placed the source code of [HM](https://vcgit.hhi.fraunhofer.de/jvet/HM/-/tree/master?ref_type=heads) under the path `examples/helper/HM_master`. Then you just need to compile it:
+We have placed the source code of [HM-18.0](https://vcgit.hhi.fraunhofer.de/jvet/HM/-/tree/HM-18.0?ref_type=tags) under the path `examples/helper/HM-18.0`. Then you just need to compile it:
 
 ```
-cd examples/helper/HM_master
+cd examples/helper/HM-18.0
 mkdir build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DHIGH_BITDEPTH=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j
 ```
 
+Note: Since the original code from HM-18.0 fails during compilation due to certain warnings, I added the line "set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-array-bounds")" in CMakeLists.txt to suppress this issue.
+
 **Scripts**
 
-Go back to the example folder.
+Go back to the `examples` folder and run the scripts:
 
 ```
 cd ../../../
-```
-
-Run the scripts:
-
-```
 bash benchmarks/mpeg152/1f_vid_hm/bartender.sh
 ```
 
+
 **Note**: 
 Before using the scripts mentioned above, please note the following:
-1. Please modify the input parameters ``--ply_dir``, ``--data_dir`` in the script to match your local paths.
+1. Please modify the input parameters ``--ply_dir``, ``--data_dir``, ``--ply_filename``(needed for single frame input), ``--masks``(needed for object-centric content) in the script to match your local paths.
+2. These experiments involve third-party programs, including QMIV (quality evaluation software). If you need newer versions, you can compile them yourself and replace the current executables under ``examples/helper``.
 
 </details>
 
