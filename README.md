@@ -139,6 +139,34 @@ Before using the scripts mentioned above, please note the following:
 2. These experiments involve third-party programs, including point cloud codec and QMIV (quality evaluation software). If you need newer versions, you can compile them yourself and replace the current executables under ``examples/helper``.
 </details>
 
+### Pre- & Post-Processing of Video-based Anchor
+We provide standalone Python scripts to handle preprocessing and postprocessing of Gaussian Splats parameters in [Video-based Anchor](#compress-tracked-gaussian-splats-sequences-via-video-codec-video-based-anchor).
+
+Specifically, the preprocessing includes quaternion normalization and fixed-point quantization for all parameters. In fixed-point quantization, we employ per-channel min-max quantization for all attributes. While the means representing Gaussian Splats positions are uniformly quantized to 16 bits, other attributes use 8-bit uniform quantization. The per-channel maximum and minimum values for each component, along with their bitdepth information, are stored in a JSON file as metadata for subsequent postprocessing.
+
+``` shell
+cd examples
+python gs_ply_process.py \
+    --preprocess \
+    --raw_ply_path data/GSC_splats/m71763_bartender_stable/track/frame000.ply \
+    --exp_dir results/gs_ply_process/bartender \
+```
+
+The postprocessing involves dequantizing the input PLY file using the metadata information. Note that postprocessing cannot be skipped since it converts the values back to the I-3DGS domain.
+
+``` shell
+cd examples
+# Note: Place the decoded PLY file in the '--exp_dir' directory and provide its filename via the '--quantized_ply_filename' parameter.
+python gs_ply_process.py \
+    --postprocess \
+    --quantized_ply_filename quantized.ply \ 
+    --exp_dir results/gs_ply_process/bartender \
+    --dequantized_ply_filename dequantized.ply
+```
+
+You can check out "examples/benchmarks/gs_ply_process/gs_ply_process.sh" and "examples/gs_ply_process.py" for more details.
+
+
 ### Static Gaussian Splats Training and Compression
 
 We provide a script that enables more memory-efficient Gaussian splats while maintaining high visual quality, such as representing the Truck scene with only about 8MB of storage. The script includes 1) the static splats training with compression simulation, 2) the compression of trained static splats, and 3) the metric evaluation of uncompressed and compressed static splats.

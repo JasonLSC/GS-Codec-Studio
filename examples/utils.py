@@ -281,6 +281,38 @@ def apply_depth_colormap(
         img = img * acc + (1.0 - acc)
     return img
 
+def save_ply(splats: torch.nn.ParameterDict, path: str):
+    from plyfile import PlyData, PlyElement
+
+    means = splats["means"].detach().cpu().numpy()
+    normals = np.zeros_like(means)
+    sh0 = splats["sh0"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    shN = splats["shN"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    opacities = splats["opacities"].detach().unsqueeze(1).cpu().numpy()
+    scales = splats["scales"].detach().cpu().numpy()
+    quats = splats["quats"].detach().cpu().numpy()
+
+    def construct_list_of_attributes(splats):
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+
+        for i in range(splats["sh0"].shape[1]*splats["sh0"].shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(splats["shN"].shape[1]*splats["shN"].shape[2]):
+            l.append('f_rest_{}'.format(i))
+        l.append('opacity')
+        for i in range(splats["scales"].shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(splats["quats"].shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
+
+    dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes(splats)]
+
+    elements = np.empty(means.shape[0], dtype=dtype_full)
+    attributes = np.concatenate((means, normals, sh0, shN, opacities, scales, quats), axis=1)
+    elements[:] = list(map(tuple, attributes))
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(path)
 
 def load_ply(path: str) -> torch.nn.ParameterDict:
     # Read PLY file
