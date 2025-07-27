@@ -166,6 +166,8 @@ python gs_ply_process.py \
 
 You can check out "examples/benchmarks/gs_ply_process/gs_ply_process.sh" and "examples/gs_ply_process.py" for more details.
 
+### 
+---
 
 ### Static Gaussian Splats Training and Compression
 
