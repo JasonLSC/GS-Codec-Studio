@@ -169,6 +169,11 @@ You can check out "examples/benchmarks/gs_ply_process/gs_ply_process.sh" and "ex
 ### Running I-3DGS Quality Assessment via MPEG GSC Metrcis Software
 
 **Installation**
+Get submodules for MPEG GSC Software. 
+```
+git submodule update --init --recursive
+```
+
 1. Install mpeg-gsc-metrics  
 Go into the "mpeg-gsc-metrics" submodule folder and simply run build.sh.
 
