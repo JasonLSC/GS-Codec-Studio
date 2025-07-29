@@ -166,7 +166,59 @@ python gs_ply_process.py \
 
 You can check out "examples/benchmarks/gs_ply_process/gs_ply_process.sh" and "examples/gs_ply_process.py" for more details.
 
-### 
+### Running I-3DGS Quality Assessment via MPEG GSC Metrcis Software
+
+**Installation**
+1. Install mpeg-gsc-metrics  
+Go into the "mpeg-gsc-metrics" submodule folder and simply run build.sh.
+
+```
+cd third_party/mpeg-gsc-metrics
+bash build.sh
+```
+
+For more details, please refer to the [README.md](third_party/mpeg-gsc-metrics/README.md) in the ["mpeg-gsc-metrics"](https://git.mpeg.expert/MPEG/Explorations/GSC/gsc-software/mpeg-gsc-metrics) project.
+
+2. Install mpeg-gsc-tools/gsTools  
+This software is used to add camera information into 3DGS ply files. Camera information is needed when using mpeg-gsc-metrics.
+
+Go into the gsTools folder under the "mpeg-gsc-tools" submodule and simply run build.sh.
+
+```
+cd third_party/mpeg-gsc-tools/gsTools
+bash build.sh
+```
+
+**Steps to run**
+
+1. Add camera information to source ply files
+
+    Camera information must be included in the ply files because the mpeg-gsc-metrics software requires it to support rendering and metric evaluation under specified camera parameters.
+    ```
+    bash scripts/add_cam_info_to_src_ply.sh
+    ```
+2. Run compression experiments
+    ```
+    bash scripts/run_1f_exps.sh
+    ```
+3. Add camera information to decoded ply files obtained from compression experiments
+    ```
+    bash scripts/add_cam_info_to_dec_ply.sh
+    ```
+4. Run mpeg_gsc_metrcis software to get visual quality metrics
+    ```
+    bash scripts/run_mpeg_gsc_metrics.sh
+    ```
+5. Get final summarized rate-distortion results in csv file
+    ```
+    bash scripts/run_metrics_extraction.sh
+    ```
+
+We also provide all-in-one script for experiments:
+```
+bash scripts/run_1f_vid_full_pipeline.sh
+```
+
 ---
 
 ### Static Gaussian Splats Training and Compression

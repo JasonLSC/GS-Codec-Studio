@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the list of GPU IDs to use
-GPU_IDS=(1 2 3 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+GPU_IDS=(0 1 2 3 4)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
 dataset=man_with_fruit
 frame_num=1
@@ -31,7 +31,8 @@ run_experiment() {
         --compression_cfg.use_sort \
         --compression_cfg.sort_type plas \
         --compression_cfg.use_all_intra \
-        --compression_cfg.video_codec_type hm
+        --compression_cfg.video_codec_type hm \
+        # --decode_only
     
     echo "Experiment rp${rp_id} started on GPU ${gpu_id}"
 }
@@ -42,12 +43,12 @@ if [ ${#GPU_IDS[@]} -lt 4 ]; then
 fi
 
 # Launch experiments in parallel
-for i in {0..3}; do
+for i in {0..4}; do
     if [ $i -lt ${#GPU_IDS[@]} ]; then
-        run_experiment ${GPU_IDS[$i]} $i &
-        echo "Launched experiment rp${i} on GPU ${GPU_IDS[$i]} in background"
+        run_experiment ${GPU_IDS[$i]} $((i+1)) &
+        echo "Launched experiment rp$((i+1)) on GPU ${GPU_IDS[$i]} in background"
     else
-        echo "Skipping experiment rp${i} due to insufficient GPUs"
+        echo "Skipping experiment rp$((i+1)) due to insufficient GPUs"
     fi
 done
 
@@ -57,4 +58,4 @@ wait
 echo "All experiments completed"
 
 # Run the Python script to generate CSV after all experiments
-python benchmarks/mpeg152/rate_distortion_stats_to_csv.py --exp-dir ${EXP_DIR}
+# python benchmarks/mpeg152/rate_distortion_stats_to_csv.py --exp-dir ${EXP_DIR}

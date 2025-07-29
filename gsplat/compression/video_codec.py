@@ -24,9 +24,10 @@ VIDEO_CODEC_PATHS = {
     "hm": {
         "encoder": "helper/HM-18.0/bin/TAppEncoderStatic",
         "decoder": "helper/HM-18.0/bin/TAppDecoderStatic",
-        "intra_config_path": "helper/hm_cfg/intra_yuv444p.cfg",
-        # "gopsize16_config_path": "helper/HM-master/cfg/encoder_randomaccess_main_rext.cfg",
-        "lossless_config_path": "helper/hm_cfg/intra_lossless_bit8.cfg",
+        "intra_lossy_config_path": "helper/hm_cfg/intra_yuv444p.cfg",
+        "intra_lossless_config_path": "helper/hm_cfg/intra_lossless_yuv444p.cfg",
+        "inter_lossy_config_path": "helper/hm_cfg/inter_yuv444p.cfg",
+        "inter_lossless_config_path": "helper/hm_cfg/inter_lossless_yuv444p.cfg",
     },
     "ffmpeg": {
         "encoder": "ffmpeg",
@@ -70,10 +71,10 @@ class VideoCodec:
         codec_paths = VIDEO_CODEC_PATHS[self.video_codec_type]
         self.encoder_path = Path(encoder_path or codec_paths['encoder'])
         self.decoder_path = Path(decoder_path or codec_paths['decoder'])
-        self.intra_config_path = codec_paths.get('intra_config_path')
-        self.gopsize16_config_path = codec_paths.get('gopsize16_config_path')
-        self.lossless_444_config_path = codec_paths.get('lossless_444_config_path')
-        self.lossless_config_path = codec_paths.get('lossless_config_path')
+        self.intra_lossy_config_path = codec_paths.get('intra_lossy_config_path')
+        self.inter_lossy_config_path = codec_paths.get('inter_lossy_config_path')
+        self.intra_lossless_config_path = codec_paths.get('intra_lossless_config_path')
+        self.inter_lossless_config_path = codec_paths.get('inter_lossless_config_path')
 
         self._check_executables()
 
@@ -170,7 +171,7 @@ class VideoCodec:
         if not chroma_format:
             raise ValueError(f"Unsupported pix_fmt for VTM: {p['pix_fmt']}")
 
-        config_path = self.intra_config_path if p.get('use_all_intra') else self.gopsize16_config_path
+        config_path = self.intra_lossy_config_path if p.get('use_all_intra') else self.inter_lossy_config_path
 
         cmd = [
             str(self.encoder_path),
@@ -203,10 +204,10 @@ class VideoCodec:
 
         # Use lossless config if qp < 0
         if p['qp'] < 0:
-            config_path = self.lossless_config_path
+            config_path = self.intra_lossless_config_path if p.get('use_all_intra') else self.inter_lossless_config_path
             qp_value = 4
         else:
-            config_path = self.intra_config_path if p.get('use_all_intra') else self.gopsize16_config_path
+            config_path = self.intra_lossy_config_path if p.get('use_all_intra') else self.inter_lossy_config_path
             qp_value = p['qp']
 
         cmd = [
@@ -251,7 +252,7 @@ class VideoCodec:
             '-c:v', 'libx265',
             '-x265-params', qp_params,
         ]
-        if p.get('all_intra', False):
+        if p.get('use_all_intra', False):
             cmd.extend(['-g', '1'])  # GOP size of 1 means all-intra
         
         cmd.append(str(o_path))

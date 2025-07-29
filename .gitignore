@@ -153,3 +153,5 @@ examples/benchmarks/stg/old
 
 examples/helper/src/
 !examples/helper/src/HM-18.0/bin
+
+logs/

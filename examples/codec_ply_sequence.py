@@ -36,7 +36,7 @@ from typing_extensions import Literal, assert_never
 from gsplat import strategy
 from gsplat.compression.entropy_coding_compression import EntropyCodingCompression
 from gsplat.compression_simulation import simulation
-from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed, load_ply, verify_random_seed
+from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, save_ply, set_random_seed, load_ply, verify_random_seed
 from lib_bilagrid import (
     BilateralGrid,
     slice,
@@ -412,7 +412,7 @@ class Config:
 
     lpips_net: Literal["vgg", "alex"] = "alex"
     # Enable LPIPS calculation
-    with_lpips: bool = True
+    with_lpips: bool = False
 
     ### specific for I-3DGS compression
     # folder containing plys
@@ -429,6 +429,8 @@ class Config:
     anchor_type: Literal["video","video_codec" "pcc"] = "video"
     # GOP size
     gop_size: int = 16
+    # decode only
+    decode_only: bool = False
 
 class Runner:
     def __init__(
@@ -507,6 +509,7 @@ class Runner:
                 splats = load_ply(filename)
                 splats_list.append(splats.to("cuda"))
         else:
+            self.ply_filename_list = [ply_filename]
             assert ply_filename is not None, "ply_filename must be provided if frame_num is 1"
             splats = load_ply(ply_filename)
             splats_list = [splats.to("cuda")]
@@ -904,7 +907,7 @@ class Runner:
         height, width = self.valset_list[0][0]["image"].shape[0:2]
         resolution = f"{width}x{height}"
 
-        os.makedirs(f"{self.cfg.result_dir}/log", exist_ok=True)
+        os.makedirs(f"{self.cfg.result_dir}/logs", exist_ok=True)
 
         gsc_metrics_across_test_views = defaultdict(dict)
         
@@ -915,7 +918,7 @@ class Runner:
         for i, test_view_id in enumerate(test_view_ids):
             render_png_filename = Path(f"{self.cfg.result_dir}/renders/compress_frame{{:03d}}_testv{test_view_id:03d}.png")
             ref_png_filename = Path(f"{self.cfg.result_dir}/renders/val_frame{{:03d}}_testv{test_view_id:03d}.png")
-            saved_log_file = Path(f"{self.cfg.result_dir}/log/QMIV_testv{test_view_id:03d}.txt")
+            saved_log_file = Path(f"{self.cfg.result_dir}/logs/QMIV_testv{test_view_id:03d}.txt")
 
 
             # Record QMIV timing
@@ -1028,6 +1031,8 @@ class Runner:
         rd_summary = {"quality_vs_GT":{key: value for key, value in avg_quality_metrics.items() if key != "ellipse_time"}}
         rd_summary["quality_vs_val"] = {key: value for key, value in avg_gsc_metrics.items()}
         rd_summary["bitrate"] = bitrate
+        rd_summary["total_size"] = format_size(total_size)
+        rd_summary["total_size_bytes"] = total_size
         with open(os.path.join(self.cfg.result_dir, "summary.json"), "w") as fp:
             json.dump(rd_summary, fp, indent=4)
 
@@ -1050,17 +1055,6 @@ class Runner:
                     print(f"Error running ffmpeg command for {stage}, test view {test_view_id}:")
                     print(f"Command: {cmd}")
                     print(f"Error output: {e.stderr}")
-
-                # print(f"Video created for {stage}, test view {test_view_id}")
-
-                # png sequence to yuv for MPEG GSC metrics (not used for now)
-                # cmd = (f'ffmpeg -framerate 30 -i "{self.cfg.result_dir}/renders/{stage}_frame%03d_testv{test_view_id:03d}.png" '
-                #     f'-c:v rawvideo -pix_fmt yuv420p '
-                #     f'"{self.cfg.result_dir}/renders/{stage}_testv{test_view_id:03d}.yuv"')
-                
-                # print(f"Running: {cmd}")
-                # os.system(cmd)
-                # print(f"YUV Video created for {stage}, test view {test_view_id}")
     
     def test_transform(self):
         '''
@@ -1106,6 +1100,11 @@ class Runner:
                 
                 print(f"{metric.upper():<8}: {value1:.4f} -> {value2:.4f} ({diff_str})")
 
+def create_dir(path):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    os.makedirs(path)
+
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     runner = Runner(local_rank, world_rank, world_size, cfg)
     
@@ -1115,32 +1114,37 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     # transform_stats = runner.test_transform()
     # runner.compare_render_stats(render_stats, transform_stats)
     compress_dir = f"{cfg.result_dir}/compression"
-
-    if os.path.exists(compress_dir):
-        shutil.rmtree(compress_dir)
-    os.makedirs(compress_dir)
+    if not cfg.decode_only:
+        create_dir(compress_dir)
 
     if cfg.anchor_type == "video": # TODO: change "video" to "video_deprecated"
         splats_list_c = runner.compress(compress_dir)
     elif cfg.anchor_type == "video_codec": # TODO: change "video_codec" to "video"
-        runner.video_encode(compress_dir)
+        if not cfg.decode_only:
+            runner.video_encode(compress_dir)
         splats_list_c = runner.video_decode(compress_dir)
     elif cfg.anchor_type == "pcc":
         splats_list_c = runner.pcc_compress(compress_dir)
     else:
         raise NotImplementedError(f"{cfg.anchor_type} Anchor has not been implemented.")
     
+    # save the sequences of decoded gaussian splats into the sequences of ply files
+    decoded_ply_dir = f"{cfg.result_dir}/decoded_ply"
+    create_dir(decoded_ply_dir)
+    for idx, splats_c in enumerate(splats_list_c):
+        decoded_ply_filename = os.path.basename(runner.ply_filename_list[idx])
+        save_ply(splats_c, os.path.join(decoded_ply_dir, decoded_ply_filename))
+    
     for splats, splats_c in zip(runner.splats_list, splats_list_c):
         for k in splats.keys():
             splats[k].data = splats_c[k].to(runner.device)
            
     compress_stats = runner.eval(stage="compress")
-    
     runner.compare_render_stats(render_stats, compress_stats, name1="Uncompressed", name2="Compressed")
 
     runner.stack_render_img_to_vid()
     runner.eval_pngs_with_gsc_ctc_metrics()
-    runner.summary()
+    # runner.summary()
 
 if __name__ == "__main__":
     configs = {
@@ -1186,7 +1190,7 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "rp0": (
+        "old_rp0": (
             "Use SeqYUVCodec.",
             Config(
                 anchor_type="video_codec",
@@ -1211,7 +1215,7 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "rp1": (
+        "old_rp1": (
             "Use SeqYUVCodec.",
             Config(
                 anchor_type="video_codec",
@@ -1236,7 +1240,7 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "rp2": (
+        "old_rp2": (
             "Use SeqYUVCodec.",
             Config(
                 anchor_type="video_codec",
@@ -1261,7 +1265,7 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "rp3": (
+        "old_rp3": (
             "Use SeqYUVCodec.",
             Config(
                 anchor_type="video_codec",
@@ -1280,6 +1284,131 @@ if __name__ == "__main__":
                             "sh1": {"qp": 28, "pix_fmt": "yuv444p"},
                             "sh2": {"qp": 34, "pix_fmt": "yuv444p"},
                             "sh3": {"qp": 40, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
+        "rp5": (
+            "Use SeqYUVCodec.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 14, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 6, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 6, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 6, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 4, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 6, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 14, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 18, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
+        "rp4": (
+            "Use SeqYUVCodec.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 22, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 14, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 14, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 14, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 6, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 14, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 22, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 25, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
+        "rp3": (
+            "Use SeqYUVCodec.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 30, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 22, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 22, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 22, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 10, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 22, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 30, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 33, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
+        "rp2": (
+            "Use SeqYUVCodec.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 38, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 30, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 30, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 30, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 18, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 30, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 38, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 41, "pix_fmt": "yuv444p"},
+                        },
+                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
+                    }
+                )
+            )
+        ),
+        "rp1": (
+            "Use SeqYUVCodec.",
+            Config(
+                anchor_type="video_codec",
+                compression="seq_yuv_codec",
+                compression_cfg=SeqYUVCodecConfig(
+                    attribute_configs={
+                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
+                        "opacities": {"qp": 46, "pix_fmt": "yuv400p"},
+                        "quats": {
+                            "w": {"qp": 38, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 38, "pix_fmt": "yuv444p"},
+                        },
+                        "scales": {"qp": 38, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 26, "pix_fmt": "yuv444p"},
+                        "shN": {
+                            "sh1": {"qp": 38, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 46, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 49, "pix_fmt": "yuv444p"},
                         },
                         "default": {"qp": -1, "pix_fmt": "yuv444p"},
                     }

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Define the list of GPU IDs to use
-GPU_IDS=(0 1 2 3)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+GPU_IDS=(0 1 2 3 4)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
 dataset=cinema
-frame_num=32
+frame_num=1
 
 EXP_DIR=results/mpeg152/1f_vid_hm/${dataset}
 
@@ -18,7 +18,8 @@ run_experiment() {
     CUDA_VISIBLE_DEVICES=${gpu_id} python codec_ply_sequence.py rp${rp_id} \
         --data_factor 1 \
         --ply_dir data/GSC_splats/m71763_${dataset}_stable/track \
-        --data_dir data/GSC_splats/m71763_${dataset}_stable/colmap_data \
+        --ply_filename data/GSC_splats/m71763_${dataset}_stable/track/frame000.ply \
+        --data_dir data/GSC_splats/m71763_${dataset}_stable/colmap_data/frame000 \
         --result_dir ${EXP_DIR}/rp${rp_id} \
         --frame_num ${frame_num} \
         --gop_size 16 \
@@ -29,7 +30,8 @@ run_experiment() {
         --compression_cfg.use_sort \
         --compression_cfg.sort_type plas \
         --compression_cfg.use_all_intra \
-        --compression_cfg.video_codec_type hm
+        --compression_cfg.video_codec_type hm \
+        # --decode_only
     
     echo "Experiment rp${rp_id} started on GPU ${gpu_id}"
 }
@@ -40,12 +42,12 @@ if [ ${#GPU_IDS[@]} -lt 4 ]; then
 fi
 
 # Launch experiments in parallel
-for i in {0..3}; do
+for i in {0..4}; do
     if [ $i -lt ${#GPU_IDS[@]} ]; then
-        run_experiment ${GPU_IDS[$i]} $i &
-        echo "Launched experiment rp${i} on GPU ${GPU_IDS[$i]} in background"
+        run_experiment ${GPU_IDS[$i]} $((i+1)) &
+        echo "Launched experiment rp$((i+1)) on GPU ${GPU_IDS[$i]} in background"
     else
-        echo "Skipping experiment rp${i} due to insufficient GPUs"
+        echo "Skipping experiment rp$((i+1)) due to insufficient GPUs"
     fi
 done
 
@@ -55,4 +57,4 @@ wait
 echo "All experiments completed"
 
 # Run the Python script to generate CSV after all experiments
-python benchmarks/mpeg152/rate_distortion_stats_to_csv.py --exp-dir ${EXP_DIR}
+# python benchmarks/mpeg152/rate_distortion_stats_to_csv.py --exp-dir ${EXP_DIR}
