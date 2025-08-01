@@ -3,7 +3,7 @@
 # Define the list of GPU IDs to use
 GPU_IDS=(0 1 2 3 4)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
-dataset=bartender
+dataset=cinema
 frame_num=32
 
 EXP_DIR=results/mpeg152/main_track_vid_hm/${dataset}

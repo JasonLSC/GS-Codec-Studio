@@ -3,7 +3,7 @@
 # Define the list of GPU IDs to use
 GPU_IDS=(0 1 2 3 4)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
-dataset=bartender
+dataset=breakfast
 frame_num=32
 
 EXP_DIR=results/mpeg152/main_track_vid_hm/${dataset}
@@ -25,7 +25,7 @@ run_experiment() {
         --lpips_net vgg \
         --no-normalize_world_space \
         --scene_type GSC \
-        --test_view_id {0..20} \
+        --test_view_id {0..14} \
         --compression_cfg.use_sort \
         --compression_cfg.sort_type morton \
         --compression_cfg.video_codec_type hm \

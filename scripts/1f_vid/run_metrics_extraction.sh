@@ -10,7 +10,7 @@ FRAME_NUM=1
 # run the metrics extraction for each scene
 for SCENE in "${SCENES[@]}"; do
     SCENE_DIR="$EXP_ROOT_DIR/$SCENE"
-    python scripts/extract_metrics.py "$SCENE_DIR" --get_bitrate --frame_num $FRAME_NUM
+    python scripts/1f_vid/extract_metrics.py "$SCENE_DIR" --get_bitrate --frame_num $FRAME_NUM
 done
 
-python scripts/merge_csv_to_excel.py $EXP_ROOT_DIR
+python scripts/1f_vid/merge_csv_to_excel.py $EXP_ROOT_DIR
