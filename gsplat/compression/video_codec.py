@@ -284,6 +284,7 @@ class VideoCodec:
             str(self.decoder_path),
             '-y',
             '-i', str(i_path),
+            '-pix_fmt', chroma_format,
             '-f', 'rawvideo',
             str(o_path),
         ]

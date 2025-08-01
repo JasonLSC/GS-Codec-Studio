@@ -595,10 +595,25 @@ class SeqYUVCodec:
         for bin_path in bin_files:
             yuv_name = bin_path.stem
             yuv_path = yuv_dir / f"{yuv_name}_decoded.yuv"
+            # In ffmpeg, it automatically use 10bit to encode videos, 
+            # so we need to specify the pix_fmt at decoder side to truncate it to 8bit
+            attr_type = yuv_name.split("_")[1]
+            
+            try:
+                if attr_type == "quats":
+                    yuv_suffix = yuv_name.split("_")[2]
+                    pix_fmt = meta[attr_type][f"pix_fmt_{yuv_suffix}"]
+                else:
+                    pix_fmt = meta[attr_type]["pix_fmt"]
+            except KeyError:
+                logging.error(f"Pix fmt not found for {attr_type}. Using default pix_fmt.")
+                pix_fmt = "yuv420p"
+
             if not yuv_path.exists():
                 video_codec.decode(
                     input_bitstream=bin_path,
                     output_yuv=yuv_path,
+                    config_params={"pix_fmt": pix_fmt}
                 )
             else:
                 logging.info(f"YUV file already exists: {yuv_path}. Skipping decoding.")

@@ -221,8 +221,8 @@ class YUVDataHandler:
     def _load_yuv_bit_split(self, param_name: str, meta: Dict[str, Any]) -> Tensor:
         """Loads a 16-bit tensor by combining two 8-bit YUVs."""
         h, w = meta["shape"][1:3]
-        _, decoded_l_path = self._get_paths(param_name, "l")
-        _, decoded_u_path = self._get_paths(param_name, "u")
+        raw_l_path, decoded_l_path = self._get_paths(param_name, "l")
+        raw_u_path, decoded_u_path = self._get_paths(param_name, "u")
         
         video_l = _load_yuv_to_tensor(str(decoded_l_path), h, w, meta["pix_fmt"])
         video_u = _load_yuv_to_tensor(str(decoded_u_path), h, w, meta["pix_fmt"])
