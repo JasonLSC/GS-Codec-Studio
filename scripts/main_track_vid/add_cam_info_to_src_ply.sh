@@ -1,5 +1,5 @@
 ## Bartender, Cinema, Breakfast
-# SCENE_NAME=(bartender cinema breakfast)
+SCENE_NAME=(bartender cinema breakfast)
 
 for scene_name in ${SCENE_NAME[@]}
 do

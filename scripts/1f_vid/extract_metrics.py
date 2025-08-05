@@ -25,14 +25,16 @@ def parse_log_file(file_path):
     """Parses a log file to extract metrics."""
     metrics = {
         "Psnr RGB (avg)": None,
-        "Psnr YUV (wavg)": None,
-        "SSIM Avg": None,
+        "Psnr YUV (avg)": None,
+        "SSIM (avg)": None,
+        "IVSSIM YUV": None,
     }
     
     patterns = {
         "Psnr RGB (avg)": re.compile(r"Psnr RGB \(avg\)\s+=\s+([\d\.]+)"),
-        "Psnr YUV (wavg)": re.compile(r"Psnr YUV \(wavg\)\s+=\s+([\d\.]+)"),
-        "SSIM Avg": re.compile(r"SSIM Avg\s+=\s+([\d\.]+)"),
+        "Psnr YUV (avg)": re.compile(r"Psnr YUV \(avg\)\s+=\s+([\d\.]+)"),
+        "SSIM (avg)": re.compile(r"SSIM \(avg\)\s+=\s+([\d\.]+)"),
+        "IVSSIM YUV": re.compile(r"IVSSIM YUV\s+=\s+([\d\.]+)"),
     }
 
     if not os.path.exists(file_path):
@@ -105,7 +107,7 @@ def main():
     output_csv_path = os.path.join(scene_path, f"{scene_name}_metrics.csv")
     
     results = []
-    headers = ["Rate Point", "Psnr RGB (avg)", "Psnr YUV (wavg)", "SSIM Avg"]
+    headers = ["Rate Point", "Psnr RGB (avg)", "Psnr YUV (avg)", "SSIM (avg)", "IVSSIM YUV"]
     if args.get_bitrate:
         headers.extend(["Bitrate (kbps)", "Total Size", "Total Size (Bytes)", "Memory_per_frame (Bytes)"])
 
@@ -118,8 +120,9 @@ def main():
         row = [
             rp, 
             metrics.get("Psnr RGB (avg)"), 
-            metrics.get("Psnr YUV (wavg)"), 
-            metrics.get("SSIM Avg")
+            metrics.get("Psnr YUV (avg)"), 
+            metrics.get("SSIM (avg)"),
+            metrics.get("IVSSIM YUV")
         ]
 
         if args.get_bitrate:
