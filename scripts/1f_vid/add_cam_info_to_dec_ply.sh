@@ -6,7 +6,7 @@ for scene_name in ${SCENE_NAME[@]}
 do
     COLMAP_DIR=examples/data/GSC_splats/m71763_${scene_name}_stable/colmap_data
 
-    for rp in $(seq 1 5)
+    for rp in $(seq 1 4)
     do
         PLY_DIR=examples/results/mpeg152/1f_vid_hm/${scene_name}/rp${rp}/decoded_ply
         for i in $(seq 0 $((FRAME_NUM-1)))
@@ -32,7 +32,7 @@ for scene_name in ${SCENE_NAME[@]}
 do
     COLMAP_DIR=examples/data/GSC_splats/m71903_bust_dataset/${scene_name}/colmap_data
 
-    for rp in $(seq 1 5)
+    for rp in $(seq 1 4)
     do
         PLY_DIR=examples/results/mpeg152/1f_vid_hm/${scene_name}/rp${rp}/decoded_ply
 

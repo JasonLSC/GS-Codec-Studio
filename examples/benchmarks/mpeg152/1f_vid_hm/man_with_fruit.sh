@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the list of GPU IDs to use
-GPU_IDS=(0 1 2 3 4)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+GPU_IDS=(0 1 2 3)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
 
 dataset=man_with_fruit
 frame_num=1
@@ -43,7 +43,7 @@ if [ ${#GPU_IDS[@]} -lt 4 ]; then
 fi
 
 # Launch experiments in parallel
-for i in {0..4}; do
+for i in {0..3}; do
     if [ $i -lt ${#GPU_IDS[@]} ]; then
         run_experiment ${GPU_IDS[$i]} $((i+1)) &
         echo "Launched experiment rp$((i+1)) on GPU ${GPU_IDS[$i]} in background"

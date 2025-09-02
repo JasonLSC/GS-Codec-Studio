@@ -90,6 +90,66 @@ def calculate_memory_per_frame(bitrate):
     except (ValueError, TypeError):
         return 'N/A'
 
+def get_component_sizes_from_compression_folder(compression_path):
+    """Aggregate sizes (in bytes) for each component in the compression folder.
+
+    Components include: means, sh0, sh1, sh2, sh3, quats, scales, opacities, meta.
+    Unknown files are counted into meta.
+    """
+    components = ['means', 'sh0', 'sh1', 'sh2', 'sh3', 'quats', 'scales', 'opacities', 'meta']
+    sizes = {k: 0 for k in components}
+
+    if not os.path.exists(compression_path):
+        print(f"Warning: compression folder not found at {compression_path}")
+        return sizes
+
+    try:
+        for root, _, files in os.walk(compression_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if not os.path.isfile(file_path):
+                    continue
+                size = os.path.getsize(file_path)
+                name = file.lower()
+
+                if 'means' in name:
+                    sizes['means'] += size
+                elif 'sh0' in name:
+                    sizes['sh0'] += size
+                elif 'sh1' in name:
+                    sizes['sh1'] += size
+                elif 'sh2' in name:
+                    sizes['sh2'] += size
+                elif 'sh3' in name:
+                    sizes['sh3'] += size
+                elif 'quat' in name:  # quats / quat
+                    sizes['quats'] += size
+                elif 'scale' in name:
+                    sizes['scales'] += size
+                elif 'opa' in name:  # opacity / opacities
+                    sizes['opacities'] += size
+                elif 'meta' in name or name.endswith('.json') or name.endswith('.txt') or 'index' in name or 'cfg' in name or 'log' in name:
+                    sizes['meta'] += size
+                else:
+                    sizes['meta'] += size
+    except Exception as e:
+        print(f"Error while aggregating component sizes in {compression_path}: {e}")
+
+    return sizes
+
+def bytes_to_kbps(size_bytes, frame_num, fps=30):
+    """Convert total bytes across a sequence to kbps at given fps and frame_num.
+    kbps = (size_bytes / frame_num) * 8 * fps / 1024
+    """
+    if size_bytes == 'N/A' or size_bytes is None:
+        return 'N/A'
+    try:
+        if frame_num <= 0:
+            return 'N/A'
+        return round((float(size_bytes) / frame_num) * 8 * fps / 1024, 3)
+    except (ValueError, TypeError):
+        return 'N/A'
+
 def main():
     """Main function to process a scene and generate CSV."""
     parser = argparse.ArgumentParser(description="Extract metrics from log files for a given scene.")
@@ -110,9 +170,23 @@ def main():
     headers = ["Rate Point", "Psnr RGB (avg)", "Psnr YUV (avg)", "SSIM (avg)", "IVSSIM YUV"]
     if args.get_bitrate:
         headers.extend(["Bitrate (kbps)", "Total Size", "Total Size (Bytes)", "Memory_per_frame (Bytes)"])
+        # Append component breakdown columns
+        component_order = ['means', 'sh0', 'sh1', 'sh2', 'sh3', 'quats', 'scales', 'opacities', 'meta']
+        label_map = {
+            'means': 'Means', 'sh0': 'SH0', 'sh1': 'SH1', 'sh2': 'SH2', 'sh3': 'SH3',
+            'quats': 'Quats', 'scales': 'Scales', 'opacities': 'Opacities', 'meta': 'Meta'
+        }
+        # First, bytes-related columns for all components
+        for comp in component_order:
+            headers.extend([f"{label_map[comp]} Size"])
+        for comp in component_order:
+            headers.extend([f"{label_map[comp]} Size (Bytes)"])
+        # Then, kbps-related columns for all components
+        for comp in component_order:
+            headers.extend([f"{label_map[comp]} Kbps"])
 
-    # Assuming rate points are rp0, rp1, rp2, rp3
-    for i in range(1,6):
+    # Assuming rate points are rp1, rp2, rp3, rp4
+    for i in range(1,5):
         rp = f"rp{i}"
         log_file_path = os.path.join(scene_path, rp, "logs", "mpeg_gsc_metrics.log")
         
@@ -135,6 +209,22 @@ def main():
                 memory_per_frame = 'N/A'
             total_size_formatted = format_size(total_size)
             row.extend([bitrate, total_size_formatted, total_size, memory_per_frame])
+
+            # Append component breakdown values
+            component_order = ['means', 'sh0', 'sh1', 'sh2', 'sh3', 'quats', 'scales', 'opacities', 'meta']
+            comp_sizes = get_component_sizes_from_compression_folder(compression_path)
+            # First, append all bytes-related values
+            for comp in component_order:
+                size_bytes = comp_sizes.get(comp, 0)
+                row.extend([format_size(size_bytes)])
+            for comp in component_order:
+                size_bytes = comp_sizes.get(comp, 0)
+                row.extend([size_bytes])
+            # Then, append all kbps-related values
+            for comp in component_order:
+                size_bytes = comp_sizes.get(comp, 0)
+                size_kbps = bytes_to_kbps(size_bytes, args.frame_num)
+                row.extend([size_kbps])
         
         results.append(row)
 

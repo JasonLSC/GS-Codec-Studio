@@ -1290,31 +1290,6 @@ if __name__ == "__main__":
                 )
             )
         ),
-        "rp5": (
-            "Use SeqYUVCodec.",
-            Config(
-                anchor_type="video_codec",
-                compression="seq_yuv_codec",
-                compression_cfg=SeqYUVCodecConfig(
-                    attribute_configs={
-                        "means": {"qp": -1, "pix_fmt": "yuv444p"},
-                        "opacities": {"qp": 14, "pix_fmt": "yuv400p"},
-                        "quats": {
-                            "w": {"qp": 6, "pix_fmt": "yuv400p"},
-                            "xyz": {"qp": 6, "pix_fmt": "yuv444p"},
-                        },
-                        "scales": {"qp": 6, "pix_fmt": "yuv444p"},
-                        "sh0": {"qp": 4, "pix_fmt": "yuv444p"},
-                        "shN": {
-                            "sh1": {"qp": 6, "pix_fmt": "yuv444p"},
-                            "sh2": {"qp": 14, "pix_fmt": "yuv444p"},
-                            "sh3": {"qp": 18, "pix_fmt": "yuv444p"},
-                        },
-                        "default": {"qp": -1, "pix_fmt": "yuv444p"},
-                    }
-                )
-            )
-        ),
         "rp4": (
             "Use SeqYUVCodec.",
             Config(
@@ -1323,17 +1298,17 @@ if __name__ == "__main__":
                 compression_cfg=SeqYUVCodecConfig(
                     attribute_configs={
                         "means": {"qp": -1, "pix_fmt": "yuv444p"},
-                        "opacities": {"qp": 22, "pix_fmt": "yuv400p"},
+                        "opacities": {"qp": 7, "pix_fmt": "yuv400p"},
                         "quats": {
-                            "w": {"qp": 14, "pix_fmt": "yuv400p"},
-                            "xyz": {"qp": 14, "pix_fmt": "yuv444p"},
+                            "w": {"qp": 2, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 2, "pix_fmt": "yuv444p"},
                         },
-                        "scales": {"qp": 14, "pix_fmt": "yuv444p"},
-                        "sh0": {"qp": 6, "pix_fmt": "yuv444p"},
+                        "scales": {"qp": 7, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 7, "pix_fmt": "yuv444p"},
                         "shN": {
-                            "sh1": {"qp": 14, "pix_fmt": "yuv444p"},
-                            "sh2": {"qp": 22, "pix_fmt": "yuv444p"},
-                            "sh3": {"qp": 25, "pix_fmt": "yuv444p"},
+                            "sh1": {"qp": 7, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 12, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 17, "pix_fmt": "yuv444p"},
                         },
                         "default": {"qp": -1, "pix_fmt": "yuv444p"},
                     }
@@ -1348,17 +1323,17 @@ if __name__ == "__main__":
                 compression_cfg=SeqYUVCodecConfig(
                     attribute_configs={
                         "means": {"qp": -1, "pix_fmt": "yuv444p"},
-                        "opacities": {"qp": 30, "pix_fmt": "yuv400p"},
+                        "opacities": {"qp": 17, "pix_fmt": "yuv400p"},
                         "quats": {
-                            "w": {"qp": 22, "pix_fmt": "yuv400p"},
-                            "xyz": {"qp": 22, "pix_fmt": "yuv444p"},
+                            "w": {"qp": 2, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 2, "pix_fmt": "yuv444p"},
                         },
-                        "scales": {"qp": 22, "pix_fmt": "yuv444p"},
-                        "sh0": {"qp": 10, "pix_fmt": "yuv444p"},
+                        "scales": {"qp": 7, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 7, "pix_fmt": "yuv444p"},
                         "shN": {
-                            "sh1": {"qp": 22, "pix_fmt": "yuv444p"},
-                            "sh2": {"qp": 30, "pix_fmt": "yuv444p"},
-                            "sh3": {"qp": 33, "pix_fmt": "yuv444p"},
+                            "sh1": {"qp": 17, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 22, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 27, "pix_fmt": "yuv444p"},
                         },
                         "default": {"qp": -1, "pix_fmt": "yuv444p"},
                     }
@@ -1373,17 +1348,17 @@ if __name__ == "__main__":
                 compression_cfg=SeqYUVCodecConfig(
                     attribute_configs={
                         "means": {"qp": -1, "pix_fmt": "yuv444p"},
-                        "opacities": {"qp": 38, "pix_fmt": "yuv400p"},
+                        "opacities": {"qp": 17, "pix_fmt": "yuv400p"},
                         "quats": {
-                            "w": {"qp": 30, "pix_fmt": "yuv400p"},
-                            "xyz": {"qp": 30, "pix_fmt": "yuv444p"},
+                            "w": {"qp": 7, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 7, "pix_fmt": "yuv444p"},
                         },
-                        "scales": {"qp": 30, "pix_fmt": "yuv444p"},
-                        "sh0": {"qp": 18, "pix_fmt": "yuv444p"},
+                        "scales": {"qp": 12, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 7, "pix_fmt": "yuv444p"},
                         "shN": {
-                            "sh1": {"qp": 30, "pix_fmt": "yuv444p"},
-                            "sh2": {"qp": 38, "pix_fmt": "yuv444p"},
-                            "sh3": {"qp": 41, "pix_fmt": "yuv444p"},
+                            "sh1": {"qp": 22, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 27, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 32, "pix_fmt": "yuv444p"},
                         },
                         "default": {"qp": -1, "pix_fmt": "yuv444p"},
                     }
@@ -1398,17 +1373,17 @@ if __name__ == "__main__":
                 compression_cfg=SeqYUVCodecConfig(
                     attribute_configs={
                         "means": {"qp": -1, "pix_fmt": "yuv444p"},
-                        "opacities": {"qp": 46, "pix_fmt": "yuv400p"},
+                        "opacities": {"qp": 22, "pix_fmt": "yuv400p"},
                         "quats": {
-                            "w": {"qp": 38, "pix_fmt": "yuv400p"},
-                            "xyz": {"qp": 38, "pix_fmt": "yuv444p"},
+                            "w": {"qp": 17, "pix_fmt": "yuv400p"},
+                            "xyz": {"qp": 17, "pix_fmt": "yuv444p"},
                         },
-                        "scales": {"qp": 38, "pix_fmt": "yuv444p"},
-                        "sh0": {"qp": 26, "pix_fmt": "yuv444p"},
+                        "scales": {"qp": 12, "pix_fmt": "yuv444p"},
+                        "sh0": {"qp": 7, "pix_fmt": "yuv444p"},
                         "shN": {
-                            "sh1": {"qp": 38, "pix_fmt": "yuv444p"},
-                            "sh2": {"qp": 46, "pix_fmt": "yuv444p"},
-                            "sh3": {"qp": 49, "pix_fmt": "yuv444p"},
+                            "sh1": {"qp": 32, "pix_fmt": "yuv444p"},
+                            "sh2": {"qp": 37, "pix_fmt": "yuv444p"},
+                            "sh3": {"qp": 42, "pix_fmt": "yuv444p"},
                         },
                         "default": {"qp": -1, "pix_fmt": "yuv444p"},
                     }

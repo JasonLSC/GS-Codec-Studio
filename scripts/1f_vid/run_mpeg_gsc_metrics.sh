@@ -2,7 +2,7 @@
 
 # Loop over each scene and rp
 SCENE_NAMES=(bartender cinema breakfast) # bartender cinema breakfast
-RP_LIST=(rp1 rp2 rp3 rp4 rp5)  
+RP_LIST=(rp1 rp2 rp3 rp4)  
 
 for SCENE in "${SCENE_NAMES[@]}"; do
     # Run each rp in parallel, then wait for all to finish
@@ -34,7 +34,7 @@ for SCENE in "${SCENE_NAMES[@]}"; do
 done
 
 SCENE_NAMES=(man_with_fruit) 
-RP_LIST=(rp1 rp2 rp3 rp4 rp5)  
+RP_LIST=(rp1 rp2 rp3 rp4)  
 
 for SCENE in "${SCENE_NAMES[@]}"; do
     # Run each rp in parallel, then wait for all to finish
