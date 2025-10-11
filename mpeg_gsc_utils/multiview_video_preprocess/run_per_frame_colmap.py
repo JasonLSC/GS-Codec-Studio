@@ -226,7 +226,10 @@ def main(config: ColmapProcessConfig):
     BASE_DIR = config.base_dir if config.base_dir else f"examples/data/GSC/{SCENE}"
     COLMAP_DIR = BASE_DIR + "/colmap"
     FRAME_NUM = config.frame_num
-    START_FRAME = DATASET_INFOS[SCENE]["start_frame"]
+    try:
+        START_FRAME = DATASET_INFOS[SCENE]["start_frame"]
+    except KeyError:
+        START_FRAME = 0
 
     print(f"Processing scene {SCENE} with {FRAME_NUM} frames starting from {START_FRAME}")
     print(f"Base directory: {BASE_DIR}")
