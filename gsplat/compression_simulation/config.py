@@ -136,14 +136,49 @@ class EntropyConfig:
 
 
 @dataclass
+class LearnableMaskSettings:
+    start_temp: float = 5.0
+    end_temp: float = 0.1
+    total_iters: int = 30_000
+    target_sparsity: float = 0.2
+    lr: float = 1e-2
+
+
+@dataclass
+class GradientMaskSettings:
+    grad_threshold: float = 2e-3
+
+
+@dataclass
 class MaskConfig:
     """Configuration for adaptive mask stage."""
 
     enabled: bool = False
     strategy: Optional[str] = "learnable"
     start_step: int = 10_000
-    regularization_weight: float = 0.0
+    regularization_weight: float = 1.0
     cap_max: Optional[int] = None
+    learnable: LearnableMaskSettings = field(default_factory=LearnableMaskSettings)
+    gradient: GradientMaskSettings = field(default_factory=GradientMaskSettings)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "strategy": self.strategy,
+            "start_step": self.start_step,
+            "regularization_weight": self.regularization_weight,
+            "cap_max": self.cap_max,
+            "learnable": {
+                "start_temp": self.learnable.start_temp,
+                "end_temp": self.learnable.end_temp,
+                "total_iters": self.learnable.total_iters,
+                "target_sparsity": self.learnable.target_sparsity,
+                "lr": self.learnable.lr,
+            },
+            "gradient": {
+                "grad_threshold": self.gradient.grad_threshold,
+            },
+        }
 
 
 @dataclass
@@ -172,6 +207,9 @@ class CompSimConfig:
             start_step=getattr(cfg, "ada_mask_steps", 10_000),
             cap_max=getattr(getattr(cfg, "strategy", None), "cap_max", None),
         )
+        grad_threshold = getattr(cfg, "shN_ada_mask_grad_threshold", None)
+        if grad_threshold is not None:
+            mask_cfg.gradient.grad_threshold = float(grad_threshold)
 
         quantizer_cfg = QuantizerConfig()
 
@@ -196,11 +234,5 @@ class CompSimConfig:
                 "gaussian_lr": self.entropy.gaussian_lr,
                 "scheduler_gamma": self.entropy.scheduler_gamma,
             },
-            "mask": {
-                "enabled": self.mask.enabled,
-                "strategy": self.mask.strategy,
-                "start_step": self.mask.start_step,
-                "regularization_weight": self.mask.regularization_weight,
-                "cap_max": self.mask.cap_max,
-            },
+            "mask": self.mask.to_dict(),
         }

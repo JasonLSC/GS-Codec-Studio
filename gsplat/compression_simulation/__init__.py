@@ -6,6 +6,11 @@ from .config import (
     QuantizerConfig,
     AttributeQuantizerConfig,
 )
+from .mask import (
+    AdaptiveMaskBase,
+    AdaptiveMaskFactory,
+    MaskResult,
+)
 from .runtime import (
     CompressionSimulationBase,
     NullCompressionSimulation,
@@ -22,6 +27,9 @@ __all__ = [
     "MaskConfig",
     "QuantizerConfig",
     "AttributeQuantizerConfig",
+    "AdaptiveMaskBase",
+    "AdaptiveMaskFactory",
+    "MaskResult",
     "CompressionSimulationBase",
     "NullCompressionSimulation",
     "SimulationResult",

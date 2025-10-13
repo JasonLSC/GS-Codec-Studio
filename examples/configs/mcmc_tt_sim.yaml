@@ -1,0 +1,40 @@
+# GS-TT compression simulation configuration matching legacy mcmc_tt_sim.sh
+disable_viewer: true
+compression_sim: true
+entropy_model_opt: true
+shN_ada_mask_opt: true
+compression: png
+rd_lambda: 0.01
+eval_steps:
+  - -1
+data_factor: 1
+# Override the following paths per scene before launching:
+data_dir: data/tandt/train
+result_dir: results/Ours_TT/train
+strategy:
+  type: MCMCStrategy
+  params:
+    cap_max: 1000000
+compression_sim_cfg:
+  enabled: true
+  entropy:
+    enabled: true
+    model_type: factorized_model
+    steps:
+      means: -1
+      quats: 10000
+      scales: 10000
+      opacities: 10000
+      sh0: 20000
+      shN: 10000
+  mask:
+    enabled: true
+    start_step: 10000
+    regularization_weight: 1.0
+    cap_max: 1000000
+    learnable:
+      start_temp: 5.0
+      end_temp: 0.1
+      total_iters: 30000
+      target_sparsity: 0.2
+      lr: 0.01

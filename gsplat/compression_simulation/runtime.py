@@ -8,6 +8,7 @@ from torch import Tensor
 from torch.nn import ParameterDict
 
 from .config import CompSimConfig
+from .mask import AdaptiveMaskFactory
 
 
 def _as_tensor_dict(data: Mapping[str, Tensor]) -> Dict[str, Tensor]:
@@ -82,12 +83,29 @@ class LegacyCompressionSimulationAdapter(CompressionSimulationBase):
     def __init__(self, legacy_obj, config: CompSimConfig, device: Optional[torch.device] = None):
         super().__init__(config, device=device)
         self._legacy = legacy_obj
+        self._mask = AdaptiveMaskFactory.create(config.mask, device)
+        if hasattr(self._legacy, 'shN_ada_mask_opt'):
+            self._legacy.shN_ada_mask_opt = False
 
     def run(self, splats: Mapping[str, Tensor] | ParameterDict, step: int) -> SimulationResult:
+        self._mask.maybe_update(step, splats)
         quantized_splats, metrics = self._legacy.simulate_compression(splats, step)
         result = SimulationResult(splats={k: v for k, v in quantized_splats.items()})
+        loss_terms: Dict[str, Tensor] = {}
+        metrics_map: Dict[str, Any] = {}
         if isinstance(metrics, Mapping):
-            result.metrics["entropy_bits"] = metrics
+            metrics_map['entropy_bits'] = metrics
+        shn = result.splats.get('shN')
+        if shn is not None:
+            mask_result = self._mask.apply(shn, step)
+            result.splats['shN'] = mask_result.value
+            if mask_result.loss is not None:
+                loss_terms['mask'] = mask_result.loss
+            metrics_map.update(mask_result.metrics)
+        if loss_terms:
+            result.loss_terms.update(loss_terms)
+        if metrics_map:
+            result.metrics.update(metrics_map)
         return result
 
     def step_optimizers(self, step: int) -> None:
@@ -107,21 +125,16 @@ class LegacyCompressionSimulationAdapter(CompressionSimulationBase):
                     if scheduler is not None and step > self.config.entropy.steps.get(name, -1):
                         scheduler.step()
 
-        if self.config.mask.enabled and self.config.mask.strategy == 'learnable':
-            mask_opt = getattr(self._legacy, 'shN_ada_mask_optimizer', None)
-            if mask_opt is not None and step > self.config.mask.start_step:
-                mask_opt.step()
-                mask_opt.zero_grad(set_to_none=True)
+        self._mask.step_optimizer(step)
 
     def state_dict(self) -> Dict[str, Any]:
         state: Dict[str, Any] = {}
         models = getattr(self._legacy, 'entropy_models', None)
         if models:
             state['entropy'] = {k: v.state_dict() for k, v in models.items() if hasattr(v, 'state_dict')}
-        if getattr(self._legacy, 'shN_ada_mask_opt', False):
-            mask = getattr(self._legacy, 'shN_ada_mask', None)
-            if mask is not None and hasattr(mask, 'state_dict'):
-                state['mask'] = mask.state_dict()
+        mask_state = self._mask.state_dict()
+        if mask_state:
+            state['mask'] = mask_state
         return state
 
     def load_state_dict(self, state: MutableMapping[str, Any]) -> None:
@@ -134,7 +147,8 @@ class LegacyCompressionSimulationAdapter(CompressionSimulationBase):
                 if model is not None and key in entropy_state and hasattr(model, 'load_state_dict'):
                     model.load_state_dict(entropy_state[key])
         mask_state = state.get('mask')
-        if mask_state and getattr(self._legacy, 'shN_ada_mask_opt', False):
-            mask = getattr(self._legacy, 'shN_ada_mask', None)
-            if mask is not None and hasattr(mask, 'load_state_dict'):
-                mask.load_state_dict(mask_state)
+        if mask_state is not None:
+            self._mask.load_state_dict(mask_state)
+
+    def get_mask_binary(self) -> Optional[Tensor]:
+        return self._mask.get_binary_mask()
