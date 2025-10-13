@@ -1,11 +1,14 @@
+import copy
 import json
 import math
 import os
 import time
 import shutil
+import sys
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union, ContextManager, TypedDict, Any
 
 import imageio
@@ -30,7 +33,6 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 from fused_ssim import fused_ssim
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal, assert_never
-from gsplat import strategy
 from gsplat.compression.entropy_coding_compression import EntropyCodingCompression
 from gsplat.compression_simulation import simulation
 from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
@@ -44,10 +46,15 @@ from lib_bilagrid import (
 from gsplat.compression import PngCompression, HevcCompression
 from gsplat.distributed import cli
 from gsplat.rendering import rasterization
-from gsplat.strategy import DefaultStrategy, MCMCStrategy
+from gsplat.strategy import DefaultStrategy, MCMCStrategy, Strategy
 from gsplat.optimizers import SelectiveAdam
 
-from gsplat.compression_simulation import CompressionSimulation
+from gsplat.compression_simulation import (
+    CompressionSimulation,
+    CompSimConfig,
+    NullCompressionSimulation,
+    LegacyCompressionSimulationAdapter,
+)
 from gsplat.compression_simulation.entropy_model import Entropy_factorized_optimized_refactor, Entropy_gaussian
 
 class ProfilerConfig:
@@ -150,6 +157,8 @@ class Config:
     compression_cfg: CompressionConfig = field(
         default_factory=CompressionConfig
     )
+
+    compression_sim_cfg: CompSimConfig = field(default_factory=CompSimConfig)
 
     # Enable profiler
     profiler_enabled: bool = False
@@ -324,6 +333,204 @@ class Config:
             strategy.refine_every = int(strategy.refine_every * factor)
         else:
             assert_never(strategy)
+
+
+CONFIG_FILE_FLAGS = ("--config", "--config-path", "-c")
+CONFIG_SAVE_FLAGS = ("--save-config", "--config-save")
+DEFAULT_CONFIG_SNAPSHOT = "config_snapshot.yaml"
+_STRATEGY_REGISTRY = {
+    "DefaultStrategy": DefaultStrategy,
+    "MCMCStrategy": MCMCStrategy,
+}
+
+
+def _pop_flag_value(flag_names: Tuple[str, ...]) -> Optional[str]:
+    """Remove and return the value for the first matching flag in sys.argv."""
+    argv = sys.argv
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        for flag in flag_names:
+            if arg == flag:
+                if i + 1 >= len(argv):
+                    raise ValueError(f"Flag {flag} requires a value.")
+                value = argv[i + 1]
+                del argv[i : i + 2]
+                return value
+            if arg.startswith(f"{flag}="):
+                value = arg.split("=", 1)[1]
+                del argv[i]
+                return value
+        i += 1
+    return None
+
+
+def _load_config_updates(config_path: Path) -> Dict[str, Any]:
+    with config_path.open("r") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file {config_path} must contain a mapping at the top level.")
+    return data
+
+
+def _coerce_value(reference: Any, value: Any) -> Any:
+    if isinstance(reference, tuple) and isinstance(value, list):
+        return type(reference)(value)
+    if isinstance(reference, tuple) and isinstance(value, tuple):
+        return type(reference)(value)
+    if isinstance(reference, list) and isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def _apply_updates(target: Any, updates: Dict[str, Any], path: str = "cfg") -> None:
+    if not isinstance(updates, dict):
+        raise ValueError(f"Expected mapping for updates at {path}, got {type(updates).__name__}")
+
+    if is_dataclass(target):
+        field_lookup = {f.name: f for f in fields(target)}
+        for key, value in updates.items():
+            if key == "type":
+                # handled elsewhere (e.g., strategy instantiation)
+                continue
+            if key not in field_lookup:
+                raise KeyError(f"Unknown configuration key '{path}.{key}'")
+
+            current_value = getattr(target, key)
+            next_path = f"{path}.{key}"
+
+            if key == "strategy":
+                setattr(target, key, _build_strategy(value, current_value))
+                continue
+
+            if is_dataclass(current_value) and isinstance(value, dict):
+                _apply_updates(current_value, value, next_path)
+                continue
+
+            if isinstance(current_value, dict) and isinstance(value, dict):
+                merged = copy.deepcopy(current_value)
+                merged.update(value)
+                setattr(target, key, merged)
+                continue
+
+            setattr(target, key, _coerce_value(current_value, value))
+        return
+
+    if isinstance(target, dict):
+        for key, value in updates.items():
+            target[key] = value
+        return
+
+    raise ValueError(f"Unsupported target type '{type(target).__name__}' at {path}")
+
+
+def _build_strategy(value: Any, current: Optional[Strategy]) -> Strategy:
+    if isinstance(value, Strategy):
+        return value
+
+    if isinstance(value, str):
+        if value not in _STRATEGY_REGISTRY:
+            raise ValueError(f"Unsupported strategy type '{value}'")
+        return _STRATEGY_REGISTRY[value]()
+
+    if isinstance(value, dict):
+        params = dict(value)
+        type_name = params.pop("type", None)
+        params_dict = params.pop("params", None)
+        if params and params_dict is not None:
+            params_dict.update(params)
+        args = params_dict if params_dict is not None else params
+
+        if type_name is None:
+            if current is None:
+                raise ValueError("Strategy 'type' must be specified when no existing strategy is present.")
+            if args:
+                _apply_updates(current, args, path="cfg.strategy")
+            return current
+
+        if type_name not in _STRATEGY_REGISTRY:
+            raise ValueError(f"Unsupported strategy type '{type_name}'")
+        cls = _STRATEGY_REGISTRY[type_name]
+
+        if current is not None and isinstance(current, cls):
+            if args:
+                _apply_updates(current, args, path="cfg.strategy")
+            return current
+
+        return cls(**(args or {}))
+
+    raise ValueError(f"Unsupported strategy specification: {value}")
+
+
+def _synchronize_compression_config(cfg: "Config") -> None:
+    comp_cfg = cfg.compression_sim_cfg
+
+    if cfg.compression_sim:
+        comp_cfg.enabled = True
+    else:
+        cfg.compression_sim = comp_cfg.enabled
+
+    if cfg.entropy_model_opt:
+        comp_cfg.entropy.enabled = True
+    else:
+        cfg.entropy_model_opt = comp_cfg.entropy.enabled
+
+    comp_cfg.entropy.model_type = cfg.entropy_model_type or comp_cfg.entropy.model_type
+    cfg.entropy_model_type = comp_cfg.entropy.model_type
+
+    if getattr(cfg, "entropy_steps", None):
+        comp_cfg.entropy.steps.update(cfg.entropy_steps)
+    cfg.entropy_steps = comp_cfg.entropy.steps
+
+    if cfg.shN_ada_mask_opt:
+        comp_cfg.mask.enabled = True
+    else:
+        cfg.shN_ada_mask_opt = comp_cfg.mask.enabled
+
+    if cfg.shN_ada_mask_strategy is not None:
+        comp_cfg.mask.strategy = cfg.shN_ada_mask_strategy
+    elif comp_cfg.mask.strategy is not None:
+        cfg.shN_ada_mask_strategy = comp_cfg.mask.strategy
+
+    if cfg.ada_mask_steps is not None:
+        comp_cfg.mask.start_step = cfg.ada_mask_steps
+    elif comp_cfg.mask.start_step is not None:
+        cfg.ada_mask_steps = comp_cfg.mask.start_step
+
+    cfg.compression_sim_cfg = comp_cfg
+
+
+def _prepare_presets(
+    presets: Dict[str, Tuple[str, Config]],
+    updates: Optional[Dict[str, Any]],
+) -> Dict[str, Tuple[str, Config]]:
+    prepared: Dict[str, Tuple[str, Config]] = {}
+    for name, (description, cfg) in presets.items():
+        cfg_copy = copy.deepcopy(cfg)
+        if updates:
+            _apply_updates(cfg_copy, updates)
+        prepared[name] = (description, cfg_copy)
+    return prepared
+
+
+def _serialize_config_value(value: Any) -> Any:
+    if is_dataclass(value):
+        payload = {f.name: _serialize_config_value(getattr(value, f.name)) for f in fields(value)}
+        if isinstance(value, Strategy):
+            payload = {"type": type(value).__name__, "params": payload}
+        return payload
+    if isinstance(value, dict):
+        return {k: _serialize_config_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_config_value(v) for v in value]
+    return value
+
+
+def save_config_snapshot(cfg: Config, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    serializable = {f.name: _serialize_config_value(getattr(cfg, f.name)) for f in fields(cfg)}
+    with destination.open("w") as f:
+        yaml.safe_dump(serializable, f, sort_keys=False)
 
 
 def create_splats_with_optimizers(
@@ -600,6 +807,8 @@ class Runner:
         else:
             assert_never(self.cfg.strategy)
 
+        self.entropy_min_step = 0
+
         # Compression Strategy
         self.compression_method = None
         if cfg.compression is not None:
@@ -614,6 +823,14 @@ class Runner:
             else:
                 raise ValueError(f"Unknown compression strategy: {cfg.compression}")
         
+        self.comp_sim_config = copy.deepcopy(cfg.compression_sim_cfg)
+        self.compression_sim_method = None
+        self.compression_simulation = NullCompressionSimulation(device=self.device)
+
+        self.comp_sim_result = None
+        self.esti_bits_dict = {name: None for name in self.comp_sim_config.quantizer.attributes.keys()}
+
+
         if cfg.compression_sim:
             cap_max = cfg.strategy.cap_max if cfg.strategy.cap_max is not None else None
             self.compression_sim_method = CompressionSimulation(cfg.entropy_model_opt, 
@@ -624,6 +841,11 @@ class Runner:
                                                     cfg.ada_mask_steps,
                                                     cfg.shN_ada_mask_strategy,
                                                     cap_max=cap_max,)
+            self.compression_simulation = LegacyCompressionSimulationAdapter(
+                self.compression_sim_method,
+                config=self.comp_sim_config,
+                device=self.device,
+            )
             # if cfg.shN_ada_mask_opt and cfg.shN_ada_mask_strategy == "gradient":
             #     self.compression_sim_method.register_shN_gradient_threshold_hook(self.splats["shN"])
 
@@ -748,19 +970,12 @@ class Runner:
         masks: Optional[Tensor] = None,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Dict]:
-        if not self.cfg.compression_sim:
-            means = self.splats["means"]  # [N, 3]
-            quats = self.splats["quats"]  # [N, 4]
-            scales = torch.exp(self.splats["scales"])  # [N, 3]
-            opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
-            sh0, shN = self.splats["sh0"], self.splats["shN"]
-        else:
-            means = self.comp_sim_splats["means"]  # [N, 3]
-            quats = self.comp_sim_splats["quats"]  # [N, 4]
-            scales = torch.exp(self.comp_sim_splats["scales"])  # [N, 3]
-            opacities = torch.sigmoid(self.comp_sim_splats["opacities"])  # [N,]
-            sh0, shN = self.comp_sim_splats["sh0"], self.comp_sim_splats["shN"]
-
+        active_splats = self.comp_sim_result.splats if self.comp_sim_result is not None else self.splats
+        means = active_splats["means"]  # [N, 3]
+        quats = active_splats["quats"]  # [N, 4]
+        scales = torch.exp(active_splats["scales"])  # [N, 3]
+        opacities = torch.sigmoid(active_splats["opacities"])  # [N,]
+        sh0, shN = active_splats["sh0"], active_splats["shN"]
 
         image_ids = kwargs.pop("image_ids", None)
         if self.cfg.app_opt:
@@ -903,8 +1118,15 @@ class Runner:
                     if step == self.entropy_min_step:
                         self.compression_sim_method._estiblish_bbox(self.splats["means"])
 
-                if cfg.compression_sim:
-                    self.comp_sim_splats, self.esti_bits_dict = self.compression_sim_method.simulate_compression(self.splats, step)
+                simulation_result = self.compression_simulation.run(self.splats, step)
+                self.comp_sim_result = simulation_result
+                entropy_bits = simulation_result.metrics.get("entropy_bits")
+                if entropy_bits is not None:
+                    for name in self.esti_bits_dict.keys():
+                        self.esti_bits_dict[name] = entropy_bits.get(name)
+                else:
+                    for name in self.esti_bits_dict.keys():
+                        self.esti_bits_dict[name] = None
 
                 # forward
                 renders, alphas, info = self.rasterize_splats(
@@ -986,7 +1208,12 @@ class Runner:
                         loss
                         + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
                     )
-                
+
+                if self.comp_sim_result is not None:
+                    for loss_name, loss_value in self.comp_sim_result.loss_terms.items():
+                        if loss_value is not None:
+                            loss = loss + loss_value
+
                 # entropy constraint
                 if cfg.entropy_model_opt and step>self.entropy_min_step:
                     total_esti_bits = 0
@@ -1146,20 +1373,8 @@ class Runner:
                     optimizer.zero_grad(set_to_none=True)
                 for scheduler in schedulers:
                     scheduler.step()
-                # (optional) entropy model params. optimize
-                if cfg.compression_sim:
-                    if cfg.entropy_model_opt:
-                        for name, optimizer in self.compression_sim_method.entropy_model_optimizers.items():
-                            if optimizer is not None:
-                                optimizer.step()
-                                optimizer.zero_grad(set_to_none=True)
-                        for name, scheduler in self.compression_sim_method.entropy_model_schedulers.items():
-                            if scheduler is not None and step > cfg.entropy_steps[name]:
-                                scheduler.step()
-                    # (optional) shN adaptive mask optimize
-                    if self.compression_sim_method.shN_ada_mask_opt and cfg.shN_ada_mask_strategy == "learnable" and step > cfg.ada_mask_steps:
-                        self.compression_sim_method.shN_ada_mask_optimizer.step()
-                        self.compression_sim_method.shN_ada_mask_optimizer.zero_grad(set_to_none=True)
+                # (optional) compression simulation optimizers
+                self.compression_simulation.step_optimizers(step)
 
                 # Run post-backward steps after backward and optimizer
                 if isinstance(self.cfg.strategy, DefaultStrategy):
@@ -1187,7 +1402,8 @@ class Runner:
 
                 # eval the full set
                 if step in [i - 1 for i in cfg.eval_steps]:
-                    self.run_param_distribution_vis(self.comp_sim_splats, 
+                    vis_splats = self.comp_sim_result.splats if self.comp_sim_result is not None else {k: v for k, v in self.splats.items()}
+                    self.run_param_distribution_vis(vis_splats, 
                                                     f"{cfg.result_dir}/visualization/comp_sim_step{step}")
                     self.eval(step)
                     self.render_traj(step)
@@ -1572,8 +1788,25 @@ if __name__ == "__main__":
             ),
         ),
     }
-    cfg = tyro.extras.overridable_config_cli(configs)
+    config_file_arg = _pop_flag_value(CONFIG_FILE_FLAGS)
+    save_config_arg = _pop_flag_value(CONFIG_SAVE_FLAGS)
+
+    external_updates = None
+    if config_file_arg is not None:
+        external_updates = _load_config_updates(Path(config_file_arg))
+    prepared_configs = _prepare_presets(configs, external_updates)
+
+    cfg = tyro.extras.overridable_config_cli(prepared_configs)
+    _synchronize_compression_config(cfg)
     cfg.adjust_steps(cfg.steps_scaler)
+
+    snapshot_path = (
+        Path(save_config_arg)
+        if save_config_arg is not None
+        else Path(cfg.result_dir) / DEFAULT_CONFIG_SNAPSHOT
+    )
+    save_config_snapshot(cfg, snapshot_path)
+    print(f"[config] snapshot saved to {snapshot_path}")
 
     # try import extra dependencies
     if cfg.compression == "png":

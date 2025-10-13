@@ -1,0 +1,15 @@
+disable_viewer: true
+compression_sim: true
+entropy_model_opt: true
+shN_ada_mask_opt: true
+compression: png
+rd_lambda: 0.01
+eval_steps:
+  - -1
+data_factor: 1
+data_dir: examples/data/tant/train
+result_dir: examples/results/mcmc_tt_demo/train
+strategy:
+  type: MCMCStrategy
+  params:
+    cap_max: 1000000
