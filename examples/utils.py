@@ -1,4 +1,5 @@
 import random
+import os
 
 import numpy as np
 import torch
@@ -155,6 +156,62 @@ def set_random_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # For multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+    # try:
+    #     torch.use_deterministic_algorithms(True)
+    # except Exception as e:
+    #     print(f"Could not use deterministic algorithms: {e}")
+
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+def verify_random_seed(result_dir: str):
+    """
+    Verify random seed consistency by generating a checksum and save to file
+    Should be called after set_random_seed()
+    
+    Args:
+        result_dir: Directory to save the checksum file
+    
+    Returns:
+        str: MD5 checksum of generated random numbers
+    """
+    import hashlib
+    import os
+    
+    # Generate random numbers from different generators
+    test_results = {
+        'python_random': random.random(),
+        'numpy_random': np.random.rand(),
+        'torch_random': torch.rand(1).item(),
+    }
+    
+    # Test CUDA random numbers if available
+    if torch.cuda.is_available():
+        test_results['torch_cuda_random'] = torch.cuda.FloatTensor(1).uniform_().item()
+    
+    # Generate checksum from results
+    result_str = ""
+    for key in sorted(test_results.keys()):
+        result_str += f"{key}:{test_results[key]:.10f};"
+    
+    checksum = hashlib.md5(result_str.encode()).hexdigest()
+    
+    # Write checksum to file
+    checksum_file = os.path.join(result_dir, 'seed_checksum.txt')
+    with open(checksum_file, 'w') as f:
+        f.write(checksum)
+    
+    print(f"Random seed checksum: {checksum}")
+    print(f"Checksum saved to: {checksum_file}")
+    print("Sample results:", test_results)
+    
+    return checksum
 
 
 # ref: https://github.com/hbb1/2d-gaussian-splatting/blob/main/utils/general_utils.py#L163
@@ -224,6 +281,38 @@ def apply_depth_colormap(
         img = img * acc + (1.0 - acc)
     return img
 
+def save_ply(splats: torch.nn.ParameterDict, path: str):
+    from plyfile import PlyData, PlyElement
+
+    means = splats["means"].detach().cpu().numpy()
+    normals = np.zeros_like(means)
+    sh0 = splats["sh0"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    shN = splats["shN"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    opacities = splats["opacities"].detach().unsqueeze(1).cpu().numpy()
+    scales = splats["scales"].detach().cpu().numpy()
+    quats = splats["quats"].detach().cpu().numpy()
+
+    def construct_list_of_attributes(splats):
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+
+        for i in range(splats["sh0"].shape[1]*splats["sh0"].shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(splats["shN"].shape[1]*splats["shN"].shape[2]):
+            l.append('f_rest_{}'.format(i))
+        l.append('opacity')
+        for i in range(splats["scales"].shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(splats["quats"].shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
+
+    dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes(splats)]
+
+    elements = np.empty(means.shape[0], dtype=dtype_full)
+    attributes = np.concatenate((means, normals, sh0, shN, opacities, scales, quats), axis=1)
+    elements[:] = list(map(tuple, attributes))
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(path)
 
 def load_ply(path: str) -> torch.nn.ParameterDict:
     # Read PLY file

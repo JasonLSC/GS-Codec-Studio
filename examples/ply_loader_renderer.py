@@ -34,7 +34,7 @@ from gsplat import strategy
 from gsplat import compression
 from gsplat.compression.entropy_coding_compression import EntropyCodingCompression
 from gsplat.compression_simulation import simulation
-from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
+from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed, save_ply, load_ply
 from lib_bilagrid import (
     BilateralGrid,
     slice,
@@ -414,103 +414,6 @@ def create_splats_with_optimizers(
     }
     return splats, optimizers
 
-def save_ply(splats: torch.nn.ParameterDict, path: str):
-    from plyfile import PlyData, PlyElement
-
-    means = splats["means"].detach().cpu().numpy()
-    normals = np.zeros_like(means)
-    sh0 = splats["sh0"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-    shN = splats["shN"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-    opacities = splats["opacities"].detach().unsqueeze(1).cpu().numpy()
-    scales = splats["scales"].detach().cpu().numpy()
-    quats = splats["quats"].detach().cpu().numpy()
-
-    def construct_list_of_attributes(splats):
-        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-
-        for i in range(splats["sh0"].shape[1]*splats["sh0"].shape[2]):
-            l.append('f_dc_{}'.format(i))
-        for i in range(splats["shN"].shape[1]*splats["shN"].shape[2]):
-            l.append('f_rest_{}'.format(i))
-        l.append('opacity')
-        for i in range(splats["scales"].shape[1]):
-            l.append('scale_{}'.format(i))
-        for i in range(splats["quats"].shape[1]):
-            l.append('rot_{}'.format(i))
-        return l
-
-    dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes(splats)]
-
-    elements = np.empty(means.shape[0], dtype=dtype_full)
-    attributes = np.concatenate((means, normals, sh0, shN, opacities, scales, quats), axis=1)
-    elements[:] = list(map(tuple, attributes))
-    el = PlyElement.describe(elements, 'vertex')
-    PlyData([el]).write(path)
-
-def load_ply(path: str) -> torch.nn.ParameterDict:
-    from plyfile import PlyData
-    import torch
-    import numpy as np
-
-    # Read PLY file
-    plydata = PlyData.read(path)
-    vertices = plydata['vertex']
-    
-    # Get total number of vertices
-    n_vertices = vertices.count
-
-    # Extract basic attributes (positions)
-    means = np.stack((vertices['x'], vertices['y'], vertices['z']), axis=1)
-    
-    # Calculate dimensions for sh0 and shN
-    sh0_size = len([prop for prop in vertices.properties if prop.name.startswith('f_dc_')])
-    shN_size = len([prop for prop in vertices.properties if prop.name.startswith('f_rest_')])
-    
-    # Extract sh0 data
-    sh0_data = np.zeros((n_vertices, sh0_size))
-    for i in range(sh0_size):
-        sh0_data[:, i] = vertices[f'f_dc_{i}']
-    
-    # Extract shN data
-    shN_data = np.zeros((n_vertices, shN_size))
-    for i in range(shN_size):
-        shN_data[:, i] = vertices[f'f_rest_{i}']
-    
-    # Extract opacity data
-    opacities = vertices['opacity'].reshape(-1, 1)
-    
-    # Extract scales data
-    scale_size = len([prop for prop in vertices.properties if prop.name.startswith('scale_')])
-    scales = np.zeros((n_vertices, scale_size))
-    for i in range(scale_size):
-        scales[:, i] = vertices[f'scale_{i}']
-    
-    # Extract quaternion data
-    quat_size = len([prop for prop in vertices.properties if prop.name.startswith('rot_')])
-    quats = np.zeros((n_vertices, quat_size))
-    for i in range(quat_size):
-        quats[:, i] = vertices[f'rot_{i}']
-    
-    # Reshape sh0 and shN to original dimensions
-    sh0_dim2 = 3  # Assume 3, adjust based on actual data
-    sh0_dim1 = sh0_size // sh0_dim2
-    shN_dim2 = 3  # Assume 3, adjust based on actual data
-    shN_dim1 = shN_size // shN_dim2
-    
-    sh0_data = sh0_data.reshape(-1, sh0_dim2, sh0_dim1).transpose(0, 2, 1)
-    shN_data = shN_data.reshape(-1, shN_dim2, shN_dim1).transpose(0, 2, 1)
-    
-    # Convert to torch tensors and create ParameterDict
-    splats = torch.nn.ParameterDict({
-        "means": torch.nn.Parameter(torch.from_numpy(means.astype(np.float32))),
-        "sh0": torch.nn.Parameter(torch.from_numpy(sh0_data.astype(np.float32))),
-        "shN": torch.nn.Parameter(torch.from_numpy(shN_data.astype(np.float32))),
-        "opacities": torch.nn.Parameter(torch.from_numpy(opacities.astype(np.float32)).squeeze(1)),
-        "scales": torch.nn.Parameter(torch.from_numpy(scales.astype(np.float32))),
-        "quats": torch.nn.Parameter(torch.from_numpy(quats.astype(np.float32)))
-    })
-    
-    return splats
 
 class Runner:
     """Engine for training and testing."""

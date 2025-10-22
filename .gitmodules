@@ -1,3 +1,12 @@
 [submodule "gsplat/cuda/csrc/third_party/glm"]
 	path = gsplat/cuda/csrc/third_party/glm
 	url = https://github.com/g-truc/glm.git
+[submodule "third_party/mpeg-gsc-tools"]
+	path = third_party/mpeg-gsc-tools
+	url = https://git.mpeg.expert/MPEG/Explorations/GSC/gsc-software/mpeg-gsc-tools.git
+[submodule "third_party/mpeg-3d-renderer"]
+	path = third_party/mpeg-3d-renderer
+	url = https://git.mpeg.expert/MPEG/Explorations/GSC/gsc-software/mpeg-3d-renderer.git
+[submodule "third_party/mpeg-gsc-metrics"]
+	path = third_party/mpeg-gsc-metrics
+	url = https://git.mpeg.expert/MPEG/Explorations/GSC/gsc-software/mpeg-gsc-metrics.git

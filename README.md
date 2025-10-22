@@ -9,11 +9,19 @@ GSCodec Studio is an open-source framework for Gaussian Splats Compression, incl
 
 ## Installation
 ### Repo. & Environment
+Please first clone the repository and cd to the root directory.
 ```bash
-# Clone the repo.
-git clone https://github.com/JasonLSC/GSCodec_Studio.git --recursive
+git clone --recursive https://git.mpeg.expert/MPEG/Explorations/GSC/gsc-software/gscodec_studio.git
 cd GSCodec_Studio
+```
 
+If you are interested in MPEG GSC Video Anchor, please check out related repository:
+```bash
+git checkout MPEG152_video_anchor_1f_vid
+```
+
+Set up conda environment.
+```bash
 # Make a conda environment
 conda create --name gscodec_studio python=3.10
 conda activate gscodec_studio
@@ -47,7 +55,7 @@ python datasets/download_dataset.py
 You can download the Tanks and Temples dataset and Deep Blending dataset used in original 3DGS via [this link](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip) and place these datasets under 'data' folder.
 ```bash
 # place other dataset, e.g Tanks and Temples dataset, under 'data' folder
-ln -s data/tandt /xxxx/Dataset/tandt
+ln -s /xxxx/Dataset/tandt data/tandt 
 ```
 
 We also use third-party library, 'python-fpnge', to accelerate image saving operations during the experiment for now. We also use third-party library, 'gridencoder', to facilitate hash encoding.
@@ -58,11 +66,16 @@ pip install third_party/python-fpnge-master
 pip install third_party/gridencoder
 ```
 
-Before we start running scripts, we also need to install library for [vector quantization](https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) and [plas sorting](https://github.com/fraunhoferhhi/PLAS).
+If you are interested in post-training compression, you also need to install library for [vector quantization](https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) and [plas sorting](https://github.com/fraunhoferhhi/PLAS), before running scripts.
 ```bash
 # refer to https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install to see how to install TorchPQ
+
+# install original implementation of PLAS
 pip install git+https://github.com/fraunhoferhhi/PLAS.git
 ```
+
+### MPEG GSC Activities
+If you are interested in MPEG GSC activities, you can find related descriptions in [this file](scripts/README.md). This covers how to run Video-based anchor, how to perform pre and post-processing of Gaussian Splats, and how to conduct Quality Assessment after completing compression experiments.
 
 ### Static Gaussian Splats Training and Compression
 
@@ -100,31 +113,13 @@ cd examples
 bash benchmarks/load_ply_and_render.sh
 ```
 
-### Compress Tracked Gaussian Splats Sequences via Video Codec
-
-If you're interested in MPEG Gaussian Splats Coding, we have implemented a simple coding method for compressing temporally tracked Gaussian Splats using Video Codec as the core component. You can try this method using the script below.
-```bash
-cd examples
-bash benchmarks/mpeg/video_anchor_bench.sh
-```
-
-To compare with the Point Cloud Compression-based approach in MPEG Gaussian Splats Coding group, we have developed a simple wrapper based on their software. This allows us to evaluate both methods using the same evaluation protocol. You can try the Point Cloud Compression-based approach using the script below.
-```bash
-cd examples
-bash benchmarks/mpeg/pcc_anchor_bench.sh
-```
-
-**Note**: 
-Before using the scripts mentioned above, please note the following:
-1. Please modify the input parameters ``--ply_dir``, ``--data_dir``, and ``--result_dir`` in the script to match your local paths.
-2. These experiments involve third-party programs, including point cloud codec and QMIV (quality evaluation software). If you need newer versions, you can compile them yourself and replace the current executables under ``examples/helper``.
-
 ## Contributors
 
 This project is developed by the following contributors:
 
 - Sicheng Li: jasonlisicheng@zju.edu.cn
 - Chengzhen Wu: chengzhenwu@zju.edu.cn
+- Zhiwei Zhu: zhuzhiwei21@zju.edu.cn
 
 If you have any questions about this project, please feel free to contact us.
 

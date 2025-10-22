@@ -1,7 +1,10 @@
 #!/bin/bash
 
 # Define the list of GPU IDs to use
-GPU_IDS=(4 5 6 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+GPU_IDS=(0 1 2 3)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+
+# Define experiment directory
+EXP_DIR=results/mpeg150/video_anchor/first_anchor
 
 # Function to run a single experiment
 run_experiment() {
@@ -14,7 +17,7 @@ run_experiment() {
         --data_factor 1 \
         --ply_dir /work/Users/lisicheng/Dataset/GSC_splats/m71763_bartender_stable/track \
         --data_dir /work/Users/lisicheng/Dataset/GSC_splats/m71763_bartender_stable/colmap_data \
-        --result_dir results/mpeg150/video_anchor/rp${rp_id} \
+        --result_dir ${EXP_DIR}/rp${rp_id} \
         --frame_num 16 \
         --lpips_net vgg \
         --no-normalize_world_space \
@@ -42,5 +45,11 @@ done
 
 # Wait for all background processes to complete
 wait
+
+# Merge all summary.json files into a single all_rp_summary.json
+echo "Merging summary files..."
+python benchmarks/mpeg/merge_summaries.py ${EXP_DIR}
+
+echo "Summary files have been merged into all_rp_summary.json"
 
 echo "All experiments completed"

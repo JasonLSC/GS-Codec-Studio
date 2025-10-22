@@ -1,0 +1,63 @@
+#!/bin/bash
+
+# Define the list of GPU IDs to use
+GPU_IDS=(4 5 6 7)  # You can modify this list, e.g., GPU_IDS=(0 2 5 7)
+
+# Define experiment directory
+EXP_DIR=results/cfp_explorations/1f_vid/sh0_yuv444_cbcrqpoffs_shN_yuv420_cbcrqpoffs
+
+# Function to run a single experiment
+run_experiment() {
+    local gpu_id=$1
+    local rp_id=$2
+    
+    echo "Starting experiment rp${rp_id} on GPU ${gpu_id}"
+
+    CUDA_VISIBLE_DEVICES=${gpu_id} python compress_ply_sequence.py seq_yuv_compression_rp${rp_id} \
+        --data_factor 1 \
+        --ply_dir /work/Users/lisicheng/Dataset/GSC_splats/m71763_bartender_stable/track \
+        --data_dir /work/Users/lisicheng/Dataset/GSC_splats/m71763_bartender_stable/colmap_data \
+        --result_dir ${EXP_DIR}/rp${rp_id} \
+        --frame_num 1 \
+        --lpips_net vgg \
+        --no-normalize_world_space \
+        --scene_type GSC \
+        --test_view_id 9 11 \
+        --compression_cfg.use_sort \
+        --compression_cfg.attribute_codec_registry.sh0.encode _compress_video_yuv \
+        --compression_cfg.attribute_codec_registry.sh0.decode _decompress_video_yuv \
+        --compression_cfg.attribute_codec_registry.shN.encode _compress_shN_video_yuv \
+        --compression_cfg.attribute_codec_registry.shN.decode _decompress_shN_video_yuv \
+        --compression_cfg.chroma_subsampling.sh0 444 \
+        --compression_cfg.chroma_subsampling.shN 420 \
+        --compression_cfg.use_chroma_qp_offset.sh0 \
+        --compression_cfg.use_chroma_qp_offset.shN
+    
+    echo "Experiment rp${rp_id} started on GPU ${gpu_id}"
+}
+
+# Check if the number of GPUs is sufficient
+if [ ${#GPU_IDS[@]} -lt 4 ]; then
+    echo "Warning: Number of GPUs is less than the number of experiments, some experiments will be skipped"
+fi
+
+# Launch experiments in parallel
+for i in {0..3}; do
+    if [ $i -lt ${#GPU_IDS[@]} ]; then
+        run_experiment ${GPU_IDS[$i]} $i &
+        echo "Launched experiment rp${i} on GPU ${GPU_IDS[$i]} in background"
+    else
+        echo "Skipping experiment rp${i} due to insufficient GPUs"
+    fi
+done
+
+# Wait for all background processes to complete
+wait
+
+# Merge all summary.json files into a single all_rp_summary.json
+echo "Merging summary files..."
+python benchmarks/mpeg/merge_summaries.py ${EXP_DIR}
+
+echo "Summary files have been merged into all_rp_summary.json"
+
+echo "All experiments completed"

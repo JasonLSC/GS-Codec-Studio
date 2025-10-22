@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, Literal
 from typing_extensions import assert_never
 
 import cv2
@@ -35,11 +35,13 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
+        mask_dir: Optional[str] = None
     ):
         self.data_dir = data_dir
         self.factor = factor
         self.normalize = normalize
         self.test_every = test_every
+        self.mask_dir = mask_dir # only used when object-centric content in MPEG GSC
 
         colmap_dir = os.path.join(data_dir, "sparse/0/")
         if not os.path.exists(colmap_dir):
@@ -161,16 +163,19 @@ class Parser:
 
         # Downsampled images may have different names vs images used for COLMAP,
         # so we need to map between the two sorted lists of files.
-        if os.path.exists(os.path.join(data_dir, "masks")): # Temporal warkaround on New Dataset, use Mask dir to verify
-            import re
-            colmap_files = sorted(_get_rel_paths(colmap_image_dir), key=lambda x: int(re.search(r'cam_(\d+)_', x).group(1)))
-            image_files = sorted(_get_rel_paths(image_dir), key=lambda x: int(re.search(r'cam_(\d+)_', x).group(1)))
-        else:
-            colmap_files = sorted(_get_rel_paths(colmap_image_dir))
-            image_files = sorted(_get_rel_paths(image_dir))
+        colmap_files = sorted(_get_rel_paths(colmap_image_dir))
+        image_files = sorted(_get_rel_paths(image_dir))
 
         colmap_to_image = dict(zip(colmap_files, image_files))
         image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
+
+        # Load masks
+        if self.mask_dir is not None:
+            mask_files = sorted(_get_rel_paths(self.mask_dir))
+            mask_paths = [os.path.join(self.mask_dir, f) for f in mask_files]
+            self.object_mask_paths = mask_paths
+        else:
+            self.object_mask_paths = None
 
         # 3D points and {image_name -> [point_idx]}
         points = manager.points3D.astype(np.float32)
@@ -335,7 +340,13 @@ class Dataset:
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K
         params = self.parser.params_dict[camera_id]
         camtoworlds = self.parser.camtoworlds[index]
-        mask = self.parser.mask_dict[camera_id]
+        if self.parser.object_mask_paths is not None: # mask for MPEG GSC object-centric content
+            mask = imageio.imread(self.parser.object_mask_paths[index]) / 255.0 # value in [0,1]
+            if len(mask.shape) == 3:  # if RGB image
+                mask = mask[..., 0]  # take first channel
+            image = image * mask[..., None]
+        else: # mask for fisheye camera in gsplat examples
+            mask = self.parser.mask_dict[camera_id]
 
         if len(params) > 0:
             # Images are distorted. Undistort them.
@@ -399,7 +410,7 @@ class GSCDataset(Dataset):
         split: str = "train",
         patch_size: Optional[int] = None,
         load_depths: bool = False,
-        test_view_ids: Optional[List[int]] = None
+        test_view_ids: Optional[Union[List[int], Literal["all"]]] = None
     ):
         # Call parent class constructor without setting indices
         super().__init__(parser, split, patch_size, load_depths)
@@ -410,8 +421,12 @@ class GSCDataset(Dataset):
             
         # Convert indices to sets for efficient lookup
         all_indices = set(range(len(self.parser.image_names)))
-        test_indices = set(test_view_ids)
-        train_indices = all_indices - test_indices  # Set difference operation
+        if test_view_ids == "all":
+            test_indices = all_indices
+            train_indices = set()
+        else:
+            test_indices = set(test_view_ids)
+            train_indices = all_indices - test_indices  # Set difference operation
         
         # Select indices based on split
         if split == "train":

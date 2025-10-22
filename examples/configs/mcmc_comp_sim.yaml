@@ -1,0 +1,163 @@
+# GS-TT compression simulation configuration matching legacy mcmc_tt_sim.sh
+eval_steps:
+  - -1
+data_factor: 1
+# Override the following paths per scene before launching:
+data_dir: examples/data/tandt/train
+result_dir: results/Ours_TT/train
+strategy:
+  type: MCMCStrategy
+  params:
+    cap_max: 1000000
+
+compression_sim_cfg:
+  enabled: true
+  entropy:
+    enabled: true
+    model_type: factorized_model
+    rd_lambda: 0.01
+    steps:
+      means: -1
+      quats: 10000
+      scales: 10000
+      opacities: 10000
+      sh0: 20000
+      shN: 10000
+  mask:
+    enabled: true
+    start_step: 10000
+    regularization_weight: 1.0
+    cap_max: 1000000
+    learnable:
+      start_temp: 5.0
+      end_temp: 0.1
+      total_iters: 30000
+      target_sparsity: 0.2
+      lr: 0.01
+
+post_training_comp_cfg:
+  input_spec:
+    input_type: ckpt
+    path: /tmp/placeholder.pt
+  codec:
+    name: png
+    params:
+      vq_storage:
+        shN: masked_npz_both
+  preprocess:
+    enabled: true
+    apply_means_log_transform: true
+    apply_quat_normalize: true
+  pruning:
+    enabled: false
+    use_outlier_filter: true
+    opacity_threshold: null
+    max_points: null
+    opacity_activation: sigmoid
+    scale_keep_ratio: null
+    scale_metric: volume
+  mapping:
+    strategy: morton
+    sort_with_shN: false
+    verbose: true
+    enabled: true
+    ensure_square: true
+    trim_score: opacity_mean
+  quant:
+    enabled: true
+    default:
+      bitwidth: 8
+      enabled: true
+      store_as_int: true
+      clamp_min: null
+      clamp_max: null
+      mode: uniform
+      symmetric: false
+      dtype: null
+      method: scalar
+      vector_clusters: null
+      vector_bits: null
+      vector_n_init: 10
+      vector_max_iter: 300
+      vector_random_state: null
+      vector_sample_size: 100000
+
+post_training_comp_cfg:
+  input_spec:
+    input_type: ckpt
+    path: /tmp/placeholder.pt
+  codec:
+    name: png
+    params:
+      vq_storage:
+        shN: masked_npz_both
+  preprocess:
+    enabled: true
+    apply_means_log_transform: true
+    apply_quat_normalize: true
+  pruning:
+    enabled: true
+    use_outlier_filter: true
+    opacity_threshold: null
+    max_points: null
+    opacity_activation: sigmoid
+    scale_keep_ratio: null
+    scale_metric: volume
+  mapping:
+    strategy: plas
+    sort_with_shN: false
+    verbose: true
+    enabled: true
+    ensure_square: true
+    trim_score: opacity_mean
+  quant:
+    enabled: true
+    default:
+      bitwidth: 8
+      enabled: true
+      store_as_int: true
+      clamp_min: null
+      clamp_max: null
+      mode: uniform
+      symmetric: false
+      dtype: null
+      method: scalar
+      vector_clusters: null
+      vector_bits: null
+      vector_n_init: 10
+      vector_max_iter: 300
+      vector_random_state: null
+      vector_sample_size: 100000
+    fields:
+      means:
+        bitwidth: 16
+        enabled: true
+        store_as_int: true
+        clamp_min: null
+        clamp_max: null
+        mode: uniform
+        symmetric: false
+        dtype: null
+        method: scalar
+        vector_clusters: null
+        vector_bits: null
+        vector_n_init: 10
+        vector_max_iter: 300
+        vector_random_state: null
+        vector_sample_size: 100000
+      shN:
+        bitwidth: 8
+        enabled: true
+        store_as_int: true
+        clamp_min: null
+        clamp_max: null
+        mode: uniform
+        symmetric: false
+        dtype: null
+        method: vector
+        vector_clusters: 16384
+        vector_bits: null
+        vector_n_init: 10
+        vector_max_iter: 300
+        vector_random_state: null
+        vector_sample_size: 100000

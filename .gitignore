@@ -150,3 +150,13 @@ examples/benchmarks/stg/old
 # examples/benchmarks/mpeg
 
 *.zip
+
+examples/helper/src/
+!examples/helper/src/HM-18.0/bin
+
+logs/
+
+AGENTS.md
+*.pdf
+*.tex
+.cursor
