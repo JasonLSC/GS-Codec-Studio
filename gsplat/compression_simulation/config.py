@@ -128,6 +128,7 @@ class EntropyConfig:
     factorized_lr: float = 1e-4
     gaussian_lr: float = 5e-3
     scheduler_gamma: float = 0.01
+    rd_lambda: float = 0.01  # Rate-distortion trade-off parameter
 
     def ensure_all_attributes(self) -> None:
         for name in ATTRIBUTE_NAMES:
@@ -192,12 +193,18 @@ class CompSimConfig:
 
     @classmethod
     def from_trainer_config(cls, cfg: Any) -> "CompSimConfig":
+        # New approach: directly use compression_sim_cfg if available
+        if hasattr(cfg, "compression_sim_cfg"):
+            return cfg.compression_sim_cfg
+        
+        # Legacy support for old field names (for backward compatibility with tests)
         enabled = bool(getattr(cfg, "compression_sim", False))
 
         entropy_cfg = EntropyConfig(
             enabled=bool(getattr(cfg, "entropy_model_opt", False)),
             model_type=getattr(cfg, "entropy_model_type", "factorized_model"),
             steps=dict(getattr(cfg, "entropy_steps", _default_entropy_steps())),
+            rd_lambda=getattr(cfg, "rd_lambda", 0.01),
         )
         entropy_cfg.ensure_all_attributes()
 
@@ -233,6 +240,7 @@ class CompSimConfig:
                 "factorized_lr": self.entropy.factorized_lr,
                 "gaussian_lr": self.entropy.gaussian_lr,
                 "scheduler_gamma": self.entropy.scheduler_gamma,
+                "rd_lambda": self.entropy.rd_lambda,
             },
             "mask": self.mask.to_dict(),
         }

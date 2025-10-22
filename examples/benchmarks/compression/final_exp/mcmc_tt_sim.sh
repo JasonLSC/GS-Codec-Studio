@@ -41,7 +41,7 @@ run_single_scene() {
     echo "Running $SCENE on GPU: $GPU_ID"
 
     # train without eval
-    CUDA_VISIBLE_DEVICES=$GPU_ID python simple_trainer.py mcmc --eval_steps -1 --disable_viewer --data_factor 1 \
+    CUDA_VISIBLE_DEVICES=$GPU_ID python simple_trainer_old.py mcmc --eval_steps -1 --disable_viewer --data_factor 1 \
         --strategy.cap-max $CAP_MAX \
         --data_dir $SCENE_DIR/$SCENE/ \
         --result_dir $RESULT_DIR/$SCENE/ \

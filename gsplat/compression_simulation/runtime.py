@@ -9,6 +9,8 @@ from torch.nn import ParameterDict
 
 from .config import CompSimConfig
 from .mask import AdaptiveMaskFactory
+from .quantizer import build_quantizer
+from .entropy import EntropyConstraint
 
 
 def _as_tensor_dict(data: Mapping[str, Tensor]) -> Dict[str, Tensor]:
@@ -53,6 +55,12 @@ class CompressionSimulationBase:
         if state:
             raise ValueError("CompressionSimulationBase.load_state_dict received unexpected state")
 
+    def get_mask_binary(self) -> Optional[Tensor]:
+        return None
+
+    def get_entropy_models(self) -> Dict[str, Any]:
+        return {}
+
 
 class NullCompressionSimulation(CompressionSimulationBase):
     """No-op simulation used when compression simulation is disabled."""
@@ -75,6 +83,120 @@ class NullCompressionSimulation(CompressionSimulationBase):
     def load_state_dict(self, state: MutableMapping[str, Any]) -> None:
         if state:
             raise ValueError("NullCompressionSimulation received unexpected state during load")
+
+
+class DefaultCompressionSimulation(CompressionSimulationBase):
+    """Compression simulation built on top of the refactored runtime components."""
+
+    def __init__(self, config: CompSimConfig, device: Optional[torch.device] = None):
+        super().__init__(config, device=device)
+        entropy_device = device if device is not None else torch.device("cpu")
+        self._entropy = EntropyConstraint(config.entropy, entropy_device)
+        self._mask = AdaptiveMaskFactory.create(config.mask, device)
+        self._quantizers: Dict[str, Any] = {}
+        for name, attr_cfg in config.quantizer.attributes.items():
+            quantizer = build_quantizer(name, attr_cfg)
+            if quantizer is not None:
+                self._quantizers[name] = quantizer
+
+    def run(
+        self, splats: Mapping[str, Tensor] | ParameterDict, step: int
+    ) -> SimulationResult:
+        tensor_dict = _maybe_to_tensor_dict(splats)
+        self._entropy.maybe_update(step, tensor_dict)
+        self._mask.maybe_update(step, tensor_dict)
+
+        result_splats: Dict[str, Tensor] = {}
+        loss_terms: Dict[str, Tensor] = {}
+        metrics: Dict[str, Any] = {}
+        entropy_bits: Dict[str, Tensor] = {}
+
+        means_tensor = tensor_dict.get("means")
+
+        for name, tensor in tensor_dict.items():
+            quantizer = self._quantizers.get(name)
+            q_step = None
+            value = tensor
+            if quantizer is not None:
+                quant_result = quantizer.quantize(tensor, step)
+                value = quant_result.value
+                q_step = quant_result.q_step
+                bitwidth = quant_result.metadata.get("bitwidth") if quant_result.metadata else None
+                if bitwidth is not None:
+                    metrics[f"quantizer/{name}_bitwidth"] = float(bitwidth.item())
+            result_splats[name] = value
+
+            entropy_tensor = value
+            transform_bits = lambda x: x
+            if name == "sh0":
+                # Entropy model expects sh0 in shape [N, 3]; squeeze the singleton SH dim and restore afterward.
+                entropy_tensor = value.squeeze(1)
+                transform_bits = lambda x: x.unsqueeze(1) if x is not None else None
+            elif name == "opacities":
+                # Legacy entropy model operates on column vectors; temporarily add the feature dim then drop it again.
+                entropy_tensor = value.unsqueeze(1)
+                transform_bits = lambda x: x.squeeze(1) if x is not None else None
+
+            entropy_result = self._entropy.evaluate(
+                attr=name,
+                tensor=entropy_tensor,
+                q_step=q_step,
+                step=step,
+                meta={"means": means_tensor} if means_tensor is not None else None,
+            )
+            if entropy_result.bits is not None:
+                entropy_bits[name] = transform_bits(entropy_result.bits)
+            if entropy_result.loss is not None:
+                loss_terms[f"entropy/{name}"] = entropy_result.loss
+            if entropy_result.metrics:
+                metrics.update(entropy_result.metrics)
+
+        shn = result_splats.get("shN")
+        if shn is not None:
+            mask_result = self._mask.apply(shn, step)
+            result_splats["shN"] = mask_result.value
+            if mask_result.loss is not None:
+                mask_loss = loss_terms.get("mask")
+                loss_terms["mask"] = mask_result.loss if mask_loss is None else mask_loss + mask_result.loss
+            if mask_result.metrics:
+                metrics.update(mask_result.metrics)
+
+        if entropy_bits:
+            metrics["entropy_bits"] = entropy_bits
+
+        return SimulationResult(splats=result_splats, loss_terms=loss_terms, metrics=metrics)
+
+    def step_optimizers(self, step: int) -> None:
+        if not self.config.enabled:
+            return
+        self._entropy.step_optimizers(step)
+        self._mask.step_optimizer(step)
+
+    def state_dict(self) -> Dict[str, Any]:
+        state: Dict[str, Any] = {}
+        entropy_state = self._entropy.state_dict()
+        if entropy_state:
+            state["entropy"] = entropy_state
+        mask_state = self._mask.state_dict()
+        if mask_state:
+            state["mask"] = mask_state
+        return state
+
+    def load_state_dict(self, state: MutableMapping[str, Any]) -> None:
+        if not state:
+            return
+        entropy_state = state.get("entropy")
+        if entropy_state:
+            self._entropy.load_state_dict(entropy_state)
+        mask_state = state.get("mask")
+        if mask_state:
+            self._mask.load_state_dict(mask_state)
+
+    def get_mask_binary(self) -> Optional[Tensor]:
+        return self._mask.get_binary_mask()
+
+    def get_entropy_models(self) -> Dict[str, Any]:
+        return dict(self._entropy.models)
 
 
 class LegacyCompressionSimulationAdapter(CompressionSimulationBase):
@@ -152,3 +274,9 @@ class LegacyCompressionSimulationAdapter(CompressionSimulationBase):
 
     def get_mask_binary(self) -> Optional[Tensor]:
         return self._mask.get_binary_mask()
+
+    def get_entropy_models(self) -> Dict[str, Any]:
+        models = getattr(self._legacy, "entropy_models", None)
+        if models is None:
+            return {}
+        return {k: v for k, v in models.items() if v is not None}

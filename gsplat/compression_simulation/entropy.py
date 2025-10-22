@@ -34,7 +34,7 @@ class EntropyConstraint:
             return
 
         model_type = config.model_type
-        supported_attrs = {"scales", "quats", "opacities", "sh0"}
+        supported_attrs = {"scales", "quats", "sh0"} # "opacities"
         gaussian_supported = {"scales", "quats", "sh0"}
 
         for attr, step in config.steps.items():

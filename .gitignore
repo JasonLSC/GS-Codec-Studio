@@ -157,3 +157,6 @@ examples/helper/src/
 logs/
 
 AGENTS.md
+*.pdf
+*.tex
+.cursor

@@ -15,6 +15,7 @@ from .runtime import (
     CompressionSimulationBase,
     NullCompressionSimulation,
     SimulationResult,
+    DefaultCompressionSimulation,
     LegacyCompressionSimulationAdapter,
 )
 from .entropy import EntropyConstraint, EntropyResult
@@ -32,6 +33,7 @@ __all__ = [
     "MaskResult",
     "CompressionSimulationBase",
     "NullCompressionSimulation",
+    "DefaultCompressionSimulation",
     "SimulationResult",
     "LegacyCompressionSimulationAdapter",
     "EntropyConstraint",

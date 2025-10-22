@@ -6,10 +6,10 @@ import time
 import shutil
 import sys
 from contextlib import nullcontext
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Union, ContextManager, TypedDict, Any
+from typing import Dict, List, Optional, Tuple, Union, ContextManager, TypedDict, Any
 
 import imageio
 import nerfview
@@ -20,17 +20,6 @@ import tqdm
 import tyro
 import viser
 import yaml
-from cfg_sys import (
-    CONFIG_FILE_FLAGS,
-    CONFIG_SAVE_FLAGS,
-    DEFAULT_CONFIG_SNAPSHOT,
-    build_from_registry,
-    load_config_updates,
-    pop_flag_value,
-    prepare_presets,
-    save_config_snapshot,
-    synchronize_compression_config,
-)
 from datasets.colmap import Dataset, GSCDataset, Parser
 from datasets.traj import (
     generate_interpolated_path,
@@ -45,18 +34,8 @@ from fused_ssim import fused_ssim
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal, assert_never
 from gsplat.compression.entropy_coding_compression import EntropyCodingCompression
-from gsplat.compression.post_training import (
-    PTCompConfig,
-    InputSpec,
-    CodecConfig as PTCodecConfig,
-    PreprocessConfig,
-    PruningConfig,
-    MappingConfig,
-    QuantConfig,
-    QuantFieldConfig,
-    PostTrainingCompressor,
-)
-from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed, save_ply, load_ply
+from gsplat.compression_simulation import simulation
+from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
 from lib_bilagrid import (
     BilateralGrid,
     slice,
@@ -71,9 +50,10 @@ from gsplat.strategy import DefaultStrategy, MCMCStrategy, Strategy
 from gsplat.optimizers import SelectiveAdam
 
 from gsplat.compression_simulation import (
+    CompressionSimulation,
     CompSimConfig,
     NullCompressionSimulation,
-    DefaultCompressionSimulation,
+    LegacyCompressionSimulationAdapter,
 )
 from gsplat.compression_simulation.entropy_model import Entropy_factorized_optimized_refactor, Entropy_gaussian
 
@@ -109,24 +89,113 @@ class ProfilerConfig:
                 setattr(self, key, value)
         self.schedule = self._create_schedule()
 
+@dataclass
+class CodecConfig:
+    encode: str
+    decode: str
+
+@dataclass
+class AttributeCodecs:
+    means: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_png_16bit", "_decompress_png_16bit"))
+    scales: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_factorized_ans", "_decompress_factorized_ans"))
+    quats: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_factorized_ans", "_decompress_factorized_ans"))
+    opacities: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_png", "_decompress_png"))
+    sh0: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_png", "_decompress_png"))
+    shN: CodecConfig = field(default_factory=lambda: CodecConfig("_compress_masked_kmeans", "_decompress_masked_kmeans"))
+    
+    def to_dict(self) -> Dict[str, Dict[str, str]]:
+        return {
+            attr: {"encode": getattr(self, attr).encode, "decode": getattr(self, attr).decode}
+            for attr in ["means", "scales", "quats", "opacities", "sh0", "shN"]
+        }
+
+@dataclass
+class CompressionConfig:
+    # Use PLAS sort in compression or not
+    use_sort: bool = True
+    # Verbose or not
+    verbose: bool = True
+    # QP value for video coding
+    qp: Optional[int] = field(default=None)
+    # Number of cluster of VQ for shN compression
+    n_clusters: int = 32768
+    # Maps attribute names to their codec functions
+    attribute_codec_registry: Optional[AttributeCodecs] = field(default_factory=lambda: AttributeCodecs())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert the CompressionConfig instance to a dictionary.
+        If attribute_codec_registry is not None, it will be converted to a dictionary using its to_dict method.
+        Fields with None values (use_sort, verbose) will be excluded from the resulting dictionary.
+        """
+        result = {
+            "use_sort": self.use_sort,
+            "verbose": self.verbose,
+            "n_clusters": self.n_clusters,
+        }
+            
+        if self.qp is not None:
+            result["qp"] = self.qp
+        
+        # handle attribute_codec_registry
+        if self.attribute_codec_registry is not None:
+            result["attribute_codec_registry"] = self.attribute_codec_registry.to_dict()
+        
+        return result
 
 @dataclass
 class Config:
     # Disable viewer
     disable_viewer: bool = False
-    # Mode of operation: 'train', 'compress'
-    mode: Literal["train", "compress"] = "train"
-    # Path to the .pt files (required for eval/compress mode)
+    # Path to the .pt files. If provide, it will skip training and run evaluation only.
     ckpt: Optional[List[str]] = None
+    # Name of compression strategy to use
+    compression: Optional[Literal["png", "entropy_coding", "hevc"]] = None
+    # # Quantization parameters when set to hevc
+    # qp: Optional[int] = None
+    # Configuration for compression methods
+    compression_cfg: CompressionConfig = field(
+        default_factory=CompressionConfig
+    )
+
+    compression_sim_cfg: CompSimConfig = field(default_factory=CompSimConfig)
 
     # Enable profiler
     profiler_enabled: bool = False
 
-    # Configuration for compression simulation during training
-    compression_sim_cfg: CompSimConfig = field(default_factory=CompSimConfig)
+    # Enable compression simulation
+    compression_sim: bool = False
+    # Name of quantization simulation strategy to use
+    quantization_sim: Optional[Literal["round", "noise", "vq"]] = None
 
-    # Configuration for post-training compression
-    post_training_comp_cfg: PTCompConfig = field(default_factory=PTCompConfig)
+    # Enable entropy model
+    entropy_model_opt: bool = False
+    # Define the type of entropy model
+    entropy_model_type: Literal["factorized_model", "gaussian_model"] = "factorized_model"
+    # Bit-rate distortion trade-off parameter
+    rd_lambda: float = 1e-2 # default: 1e-2
+    # Steps to enable entropy model into training pipeline
+    # factorized model:
+    entropy_steps: Dict[str, int] = field(default_factory=lambda: {"means": -1, 
+                                                                   "quats": 10_000, 
+                                                                   "scales": 10_000, 
+                                                                   "opacities": 10_000, 
+                                                                   "sh0": 20_000, 
+                                                                   "shN": 10_000})
+    # gaussian model:
+    # entropy_steps: Dict[str, int] = field(default_factory=lambda: {"means": -1, 
+    #                                                                "quats": 10_000, 
+    #                                                                "scales": 10_000, 
+    #                                                                "opacities": 10_000, 
+    #                                                                "sh0": 20_000, 
+    #                                                                "shN": -1})
+
+    # Enable shN adaptive mask
+    shN_ada_mask_opt: bool = False
+    # Steps to enable shN adaptive mask
+    ada_mask_steps: int = 10_000
+    # Strategy to obtain adaptive mask
+    shN_ada_mask_strategy: Optional[str] = "learnable" # "gradient"
     
     # Render trajectory path
     render_traj_path: str = "interp"
@@ -266,48 +335,203 @@ class Config:
             assert_never(strategy)
 
 
+CONFIG_FILE_FLAGS = ("--config", "--config-path", "-c")
+CONFIG_SAVE_FLAGS = ("--save-config", "--config-save")
+DEFAULT_CONFIG_SNAPSHOT = "config_snapshot.yaml"
 _STRATEGY_REGISTRY = {
     "DefaultStrategy": DefaultStrategy,
     "MCMCStrategy": MCMCStrategy,
 }
 
-def _strategy_registry_handler(
-    value: Any,
-    current: Optional[Strategy],
-    path: str,
-    apply_fn: Callable[[Any, Dict[str, Any], str], None],
-):
-    is_training_strategy = False
 
-    if isinstance(value, dict):
-        type_name = value.get("type")
-        if type_name in _STRATEGY_REGISTRY:
-            is_training_strategy = True
-        elif isinstance(current, Strategy):
-            field_names = {f.name for f in fields(type(current))}
-            if set(value.keys()).issubset(field_names):
-                is_training_strategy = True
-    elif isinstance(value, str) and value in _STRATEGY_REGISTRY:
-        is_training_strategy = True
-    elif isinstance(current, Strategy):
-        is_training_strategy = True
-
-    if not is_training_strategy:
-        return current if isinstance(current, Strategy) else value
-
-    return build_from_registry(value, _STRATEGY_REGISTRY, current, apply_fn=apply_fn, path=path)
-
-_REGISTRY_HANDLERS = {
-    "strategy": _strategy_registry_handler,
-}
-
-def _strategy_serializer(value: Any, recurse: Callable[[Any], Any]) -> Optional[Any]:
-    if isinstance(value, Strategy):
-        payload = {f.name: recurse(getattr(value, f.name)) for f in fields(value)}
-        return {"type": type(value).__name__, "params": payload}
+def _pop_flag_value(flag_names: Tuple[str, ...]) -> Optional[str]:
+    """Remove and return the value for the first matching flag in sys.argv."""
+    argv = sys.argv
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        for flag in flag_names:
+            if arg == flag:
+                if i + 1 >= len(argv):
+                    raise ValueError(f"Flag {flag} requires a value.")
+                value = argv[i + 1]
+                del argv[i : i + 2]
+                return value
+            if arg.startswith(f"{flag}="):
+                value = arg.split("=", 1)[1]
+                del argv[i]
+                return value
+        i += 1
     return None
 
-_CONFIG_SERIALIZERS = [_strategy_serializer]
+
+def _load_config_updates(config_path: Path) -> Dict[str, Any]:
+    with config_path.open("r") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file {config_path} must contain a mapping at the top level.")
+    return data
+
+
+def _coerce_value(reference: Any, value: Any) -> Any:
+    if isinstance(reference, tuple) and isinstance(value, list):
+        return type(reference)(value)
+    if isinstance(reference, tuple) and isinstance(value, tuple):
+        return type(reference)(value)
+    if isinstance(reference, list) and isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def _apply_updates(target: Any, updates: Dict[str, Any], path: str = "cfg") -> None:
+    if not isinstance(updates, dict):
+        raise ValueError(f"Expected mapping for updates at {path}, got {type(updates).__name__}")
+
+    if is_dataclass(target):
+        field_lookup = {f.name: f for f in fields(target)}
+        for key, value in updates.items():
+            if key == "type":
+                # handled elsewhere (e.g., strategy instantiation)
+                continue
+            if key not in field_lookup:
+                raise KeyError(f"Unknown configuration key '{path}.{key}'")
+
+            current_value = getattr(target, key)
+            next_path = f"{path}.{key}"
+
+            if key == "strategy":
+                setattr(target, key, _build_strategy(value, current_value))
+                continue
+
+            if is_dataclass(current_value) and isinstance(value, dict):
+                _apply_updates(current_value, value, next_path)
+                continue
+
+            if isinstance(current_value, dict) and isinstance(value, dict):
+                merged = copy.deepcopy(current_value)
+                merged.update(value)
+                setattr(target, key, merged)
+                continue
+
+            setattr(target, key, _coerce_value(current_value, value))
+        return
+
+    if isinstance(target, dict):
+        for key, value in updates.items():
+            target[key] = value
+        return
+
+    raise ValueError(f"Unsupported target type '{type(target).__name__}' at {path}")
+
+
+def _build_strategy(value: Any, current: Optional[Strategy]) -> Strategy:
+    if isinstance(value, Strategy):
+        return value
+
+    if isinstance(value, str):
+        if value not in _STRATEGY_REGISTRY:
+            raise ValueError(f"Unsupported strategy type '{value}'")
+        return _STRATEGY_REGISTRY[value]()
+
+    if isinstance(value, dict):
+        params = dict(value)
+        type_name = params.pop("type", None)
+        params_dict = params.pop("params", None)
+        if params and params_dict is not None:
+            params_dict.update(params)
+        args = params_dict if params_dict is not None else params
+
+        if type_name is None:
+            if current is None:
+                raise ValueError("Strategy 'type' must be specified when no existing strategy is present.")
+            if args:
+                _apply_updates(current, args, path="cfg.strategy")
+            return current
+
+        if type_name not in _STRATEGY_REGISTRY:
+            raise ValueError(f"Unsupported strategy type '{type_name}'")
+        cls = _STRATEGY_REGISTRY[type_name]
+
+        if current is not None and isinstance(current, cls):
+            if args:
+                _apply_updates(current, args, path="cfg.strategy")
+            return current
+
+        return cls(**(args or {}))
+
+    raise ValueError(f"Unsupported strategy specification: {value}")
+
+
+def _synchronize_compression_config(cfg: "Config") -> None:
+    comp_cfg = cfg.compression_sim_cfg
+
+    if cfg.compression_sim:
+        comp_cfg.enabled = True
+    else:
+        cfg.compression_sim = comp_cfg.enabled
+
+    if cfg.entropy_model_opt:
+        comp_cfg.entropy.enabled = True
+    else:
+        cfg.entropy_model_opt = comp_cfg.entropy.enabled
+
+    comp_cfg.entropy.model_type = cfg.entropy_model_type or comp_cfg.entropy.model_type
+    cfg.entropy_model_type = comp_cfg.entropy.model_type
+
+    if getattr(cfg, "entropy_steps", None):
+        comp_cfg.entropy.steps.update(cfg.entropy_steps)
+    cfg.entropy_steps = comp_cfg.entropy.steps
+
+    if cfg.shN_ada_mask_opt:
+        comp_cfg.mask.enabled = True
+    else:
+        cfg.shN_ada_mask_opt = comp_cfg.mask.enabled
+
+    if cfg.shN_ada_mask_strategy is not None:
+        comp_cfg.mask.strategy = cfg.shN_ada_mask_strategy
+    elif comp_cfg.mask.strategy is not None:
+        cfg.shN_ada_mask_strategy = comp_cfg.mask.strategy
+
+    if cfg.ada_mask_steps is not None:
+        comp_cfg.mask.start_step = cfg.ada_mask_steps
+    elif comp_cfg.mask.start_step is not None:
+        cfg.ada_mask_steps = comp_cfg.mask.start_step
+
+    cfg.compression_sim_cfg = comp_cfg
+
+
+def _prepare_presets(
+    presets: Dict[str, Tuple[str, Config]],
+    updates: Optional[Dict[str, Any]],
+) -> Dict[str, Tuple[str, Config]]:
+    prepared: Dict[str, Tuple[str, Config]] = {}
+    for name, (description, cfg) in presets.items():
+        cfg_copy = copy.deepcopy(cfg)
+        if updates:
+            _apply_updates(cfg_copy, updates)
+        prepared[name] = (description, cfg_copy)
+    return prepared
+
+
+def _serialize_config_value(value: Any) -> Any:
+    if is_dataclass(value):
+        payload = {f.name: _serialize_config_value(getattr(value, f.name)) for f in fields(value)}
+        if isinstance(value, Strategy):
+            payload = {"type": type(value).__name__, "params": payload}
+        return payload
+    if isinstance(value, dict):
+        return {k: _serialize_config_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_config_value(v) for v in value]
+    return value
+
+
+def save_config_snapshot(cfg: Config, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    serializable = {f.name: _serialize_config_value(getattr(cfg, f.name)) for f in fields(cfg)}
+    with destination.open("w") as f:
+        yaml.safe_dump(serializable, f, sort_keys=False)
+
 
 def create_splats_with_optimizers(
     parser: Parser,
@@ -394,6 +618,103 @@ def create_splats_with_optimizers(
     }
     return splats, optimizers
 
+def save_ply(splats: torch.nn.ParameterDict, path: str):
+    from plyfile import PlyData, PlyElement
+
+    means = splats["means"].detach().cpu().numpy()
+    normals = np.zeros_like(means)
+    sh0 = splats["sh0"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    shN = splats["shN"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    opacities = splats["opacities"].detach().unsqueeze(1).cpu().numpy()
+    scales = splats["scales"].detach().cpu().numpy()
+    quats = splats["quats"].detach().cpu().numpy()
+
+    def construct_list_of_attributes(splats):
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+
+        for i in range(splats["sh0"].shape[1]*splats["sh0"].shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(splats["shN"].shape[1]*splats["shN"].shape[2]):
+            l.append('f_rest_{}'.format(i))
+        l.append('opacity')
+        for i in range(splats["scales"].shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(splats["quats"].shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
+
+    dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes(splats)]
+
+    elements = np.empty(means.shape[0], dtype=dtype_full)
+    attributes = np.concatenate((means, normals, sh0, shN, opacities, scales, quats), axis=1)
+    elements[:] = list(map(tuple, attributes))
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(path)
+
+def load_ply(path: str) -> torch.nn.ParameterDict:
+    from plyfile import PlyData
+    import torch
+    import numpy as np
+
+    # Read PLY file
+    plydata = PlyData.read(path)
+    vertices = plydata['vertex']
+    
+    # Get total number of vertices
+    n_vertices = vertices.count
+
+    # Extract basic attributes (positions)
+    means = np.stack((vertices['x'], vertices['y'], vertices['z']), axis=1)
+    
+    # Calculate dimensions for sh0 and shN
+    sh0_size = len([prop for prop in vertices.properties if prop.name.startswith('f_dc_')])
+    shN_size = len([prop for prop in vertices.properties if prop.name.startswith('f_rest_')])
+    
+    # Extract sh0 data
+    sh0_data = np.zeros((n_vertices, sh0_size))
+    for i in range(sh0_size):
+        sh0_data[:, i] = vertices[f'f_dc_{i}']
+    
+    # Extract shN data
+    shN_data = np.zeros((n_vertices, shN_size))
+    for i in range(shN_size):
+        shN_data[:, i] = vertices[f'f_rest_{i}']
+    
+    # Extract opacity data
+    opacities = vertices['opacity'].reshape(-1, 1)
+    
+    # Extract scales data
+    scale_size = len([prop for prop in vertices.properties if prop.name.startswith('scale_')])
+    scales = np.zeros((n_vertices, scale_size))
+    for i in range(scale_size):
+        scales[:, i] = vertices[f'scale_{i}']
+    
+    # Extract quaternion data
+    quat_size = len([prop for prop in vertices.properties if prop.name.startswith('rot_')])
+    quats = np.zeros((n_vertices, quat_size))
+    for i in range(quat_size):
+        quats[:, i] = vertices[f'rot_{i}']
+    
+    # Reshape sh0 and shN to original dimensions
+    sh0_dim2 = 3  # Assume 3, adjust based on actual data
+    sh0_dim1 = sh0_size // sh0_dim2
+    shN_dim2 = 3  # Assume 3, adjust based on actual data
+    shN_dim1 = shN_size // shN_dim2
+    
+    sh0_data = sh0_data.reshape(-1, sh0_dim2, sh0_dim1).transpose(0, 2, 1)
+    shN_data = shN_data.reshape(-1, shN_dim2, shN_dim1).transpose(0, 2, 1)
+    
+    # Convert to torch tensors and create ParameterDict
+    splats = torch.nn.ParameterDict({
+        "means": torch.nn.Parameter(torch.from_numpy(means.astype(np.float32))),
+        "sh0": torch.nn.Parameter(torch.from_numpy(sh0_data.astype(np.float32))),
+        "shN": torch.nn.Parameter(torch.from_numpy(shN_data.astype(np.float32))),
+        "opacities": torch.nn.Parameter(torch.from_numpy(opacities.astype(np.float32)).squeeze(1)),
+        "scales": torch.nn.Parameter(torch.from_numpy(scales.astype(np.float32))),
+        "quats": torch.nn.Parameter(torch.from_numpy(quats.astype(np.float32)))
+    })
+    
+    return splats
 
 class Runner:
     """Engine for training and testing."""
@@ -489,48 +810,50 @@ class Runner:
         self.entropy_min_step = 0
 
         # Compression Strategy
-        # self.compression_method = None
-        # if cfg.compression is not None:
-        #     if cfg.compression == "png":
-        #         self.compression_method = PngCompression()
-        #     elif  cfg.compression == "entropy_coding":
-        #         compression_cfg = cfg.compression_cfg.to_dict()
-        #         self.compression_method = EntropyCodingCompression(**compression_cfg)
-        #     elif cfg.compression == "hevc":
-        #         compression_cfg = cfg.compression_cfg.to_dict()
-        #         self.compression_method = HevcCompression(**compression_cfg)
-        #     else:
-        #         raise ValueError(f"Unknown compression strategy: {cfg.compression}")
+        self.compression_method = None
+        if cfg.compression is not None:
+            if cfg.compression == "png":
+                self.compression_method = PngCompression()
+            elif  cfg.compression == "entropy_coding":
+                compression_cfg = cfg.compression_cfg.to_dict()
+                self.compression_method = EntropyCodingCompression(**compression_cfg)
+            elif cfg.compression == "hevc":
+                compression_cfg = cfg.compression_cfg.to_dict()
+                self.compression_method = HevcCompression(**compression_cfg)
+            else:
+                raise ValueError(f"Unknown compression strategy: {cfg.compression}")
         
         self.comp_sim_config = copy.deepcopy(cfg.compression_sim_cfg)
-
+        self.compression_sim_method = None
         self.compression_simulation = NullCompressionSimulation(device=self.device)
 
         self.comp_sim_result = None
         self.esti_bits_dict = {name: None for name in self.comp_sim_config.quantizer.attributes.keys()}
 
-        self.entropy_models: Dict[str, torch.nn.Module] = {}
 
-        if self.comp_sim_config.enabled:
-            self.compression_simulation = DefaultCompressionSimulation(
+        if cfg.compression_sim:
+            cap_max = cfg.strategy.cap_max if cfg.strategy.cap_max is not None else None
+            self.compression_sim_method = CompressionSimulation(
+                                                    cfg.entropy_model_opt,
+                                                    cfg.entropy_model_type,
+                                                    cfg.entropy_steps,
+                                                    self.device,
+                                                    False,
+                                                    cfg.ada_mask_steps,
+                                                    cfg.shN_ada_mask_strategy,
+                                                    cap_max=cap_max,
+                                                )
+            self.compression_simulation = LegacyCompressionSimulationAdapter(
+                self.compression_sim_method,
                 config=self.comp_sim_config,
                 device=self.device,
             )
-            self.entropy_models = self.compression_simulation.get_entropy_models()
-            if self.comp_sim_config.entropy.enabled:
-                steps = self.comp_sim_config.entropy.steps
-                positives = [k for k, v in steps.items() if v > 0]
-                if positives:
-                    selected_key = min(positives, key=lambda k: steps[k])
-                    self.entropy_min_step = steps[selected_key]
-        
-        # Handle post_training_comp_cfg, similar to compression_sim_cfg pattern
-        self.pt_comp_config = copy.deepcopy(cfg.post_training_comp_cfg)
-        
-        # Dynamically adjust input_spec based on ckpt parameter
-        if cfg.ckpt is not None and len(cfg.ckpt) > 0:
-            self.pt_comp_config.input_spec.path = Path(cfg.ckpt[0])
-            self.pt_comp_config.input_spec.input_type = "ckpt"
+            # if cfg.shN_ada_mask_opt and cfg.shN_ada_mask_strategy == "gradient":
+            #     self.compression_sim_method.register_shN_gradient_threshold_hook(self.splats["shN"])
+
+            if cfg.entropy_model_opt:
+                selected_key = min((k for k, v in cfg.entropy_steps.items() if v > 0), key=lambda k: cfg.entropy_steps[k])
+                self.entropy_min_step = cfg.entropy_steps[selected_key]
         
         # Profiler
         self.profiler: Optional[torch.profiler.profile] = None
@@ -792,6 +1115,11 @@ class Runner:
                 # sh schedule
                 sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
+                # compression simulation
+                if cfg.compression_sim and cfg.entropy_model_opt and cfg.entropy_model_type == "gaussian_model": # if hash-based gaussian model, need to estiblish bbox
+                    if step == self.entropy_min_step:
+                        self.compression_sim_method._estiblish_bbox(self.splats["means"])
+
                 simulation_result = self.compression_simulation.run(self.splats, step)
                 self.comp_sim_result = simulation_result
                 entropy_bits = simulation_result.metrics.get("entropy_bits")
@@ -883,26 +1211,27 @@ class Runner:
                         + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
                     )
 
-                total_esti_bits = None
                 if self.comp_sim_result is not None:
                     for loss_name, loss_value in self.comp_sim_result.loss_terms.items():
-                        if loss_value is None:
-                            continue
-                        if loss_name.startswith("entropy/"):
-                            weighted = cfg.compression_sim_cfg.entropy.rd_lambda * loss_value
-                            loss = loss + weighted
-                        else: # adaptive mask loss
+                        if loss_value is not None:
                             loss = loss + loss_value
 
-                # bpp loss (w/o multiple rd_lambda)
-                if cfg.compression_sim_cfg.entropy.enabled and step > self.entropy_min_step:
-                    if total_esti_bits is None:
-                        total_esti_bits = 0.0
-                    for n, n_step in cfg.compression_sim_cfg.entropy.steps.items():
-                        bits = self.esti_bits_dict.get(n)
-                        if step > n_step and bits is not None:
-                            total_esti_bits += torch.sum(bits) / bits.numel()
+                # entropy constraint
+                if cfg.entropy_model_opt and step>self.entropy_min_step:
+                    total_esti_bits = 0
+                    for n, n_step in cfg.entropy_steps.items():
+                        if step > n_step and self.esti_bits_dict[n] is not None:
+                            # maybe give different params with different weights
+                            total_esti_bits += torch.sum(self.esti_bits_dict[n]) / self.esti_bits_dict[n].numel() # bpp
+                        else:
+                            total_esti_bits += 0
 
+                    loss = (
+                        loss
+                        + cfg.rd_lambda * total_esti_bits
+                    )
+                
+                
                 # tmp workaround
                 loss_show = loss.detach().cpu()
                 loss.backward()
@@ -932,13 +1261,13 @@ class Runner:
                         canvas = torch.cat([pixels, colors], dim=2).detach().cpu().numpy()
                         canvas = canvas.reshape(-1, *canvas.shape[2:])
                         self.writer.add_image("train/render", canvas, step)
-                    if cfg.compression_sim_cfg.enabled:
-                        if cfg.compression_sim_cfg.entropy.enabled and step>self.entropy_min_step:
+                    if cfg.compression_sim:
+                        if cfg.entropy_model_opt and step>self.entropy_min_step:
                             self.writer.add_histogram("train_hist/quats", self.splats["quats"], step)
                             self.writer.add_histogram("train_hist/scales", self.splats["scales"], step)
                             self.writer.add_histogram("train_hist/opacities", self.splats["opacities"], step)
                             self.writer.add_histogram("train_hist/sh0", self.splats["sh0"], step)
-                            if total_esti_bits is not None and total_esti_bits > 0:
+                            if total_esti_bits > 0:
                                 self.writer.add_scalar("train/bpp_loss", total_esti_bits.item(), step)
                         mask_ratio = None
                         mask_threshold = None
@@ -969,7 +1298,7 @@ class Runner:
                         json.dump(stats, f)
                     
                     mask_binary = None
-                    if cfg.compression_sim_cfg.mask.enabled and step > cfg.compression_sim_cfg.mask.start_step:
+                    if cfg.shN_ada_mask_opt and step > cfg.ada_mask_steps:
                         mask_binary = self.compression_simulation.get_mask_binary()
                         if mask_binary is not None:
                             self.splats["shN"].data = self.splats["shN"].data * mask_binary
@@ -989,10 +1318,10 @@ class Runner:
                         else:
                             data["app_module"] = self.app_module.state_dict()
 
-                    if cfg.compression_sim_cfg.enabled and cfg.compression_sim_cfg.entropy.enabled:
-                        for name, entropy_model in self.compression_simulation.get_entropy_models().items():
+                    if cfg.compression_sim and cfg.entropy_model_opt and cfg.compression == "entropy_coding":
+                        for name, entropy_model in self.compression_sim_method.entropy_models.items():
                             if entropy_model is not None:
-                                data[name + "_entropy_model"] = entropy_model.state_dict()
+                                data[name+"_entropy_model"] = entropy_model.state_dict()
 
                     torch.save(
                         data, f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt"
@@ -1081,10 +1410,6 @@ class Runner:
                 # run compression
                 # if cfg.compression is not None and step in [i - 1 for i in cfg.eval_steps]:
                 #     self.run_compression(step=step)
-
-                # run post-training compression
-                # if cfg.post_training_comp_cfg is not None and step in [i - 1 for i in cfg.eval_steps]:
-                #     self.run_post_training_compression(step=step)
 
                 if not cfg.disable_viewer:
                     self.viewer.lock.release()
@@ -1289,71 +1614,6 @@ class Runner:
         self.render_traj(step=step, stage="compress")
 
     @torch.no_grad()
-    def run_post_training_compression(self, step: int):
-        """Use PostTrainingCompressor for post-training compression"""
-        cfg = self.cfg
-        
-        # Check if post-training compression is enabled
-        if not hasattr(self, 'pt_comp_config') or self.pt_comp_config is None:
-            print("Post-training compression not configured, skipping...")
-            return
-            
-        print("Running post-training compression...")
-        
-        # Use the configuration already adjusted during Runner initialization
-        pt_cfg = copy.deepcopy(self.pt_comp_config)
-        
-        # Further dynamic adjustments (if needed)
-        if pt_cfg.input_spec.input_type == "ckpt" and cfg.ckpt is not None:
-            pt_cfg.input_spec.path = Path(cfg.ckpt[0])
-            print(f"Using checkpoint as input: {pt_cfg.input_spec.path}")
-        else:
-            # If not loading from ckpt, save current splats as PLY
-            ply_dir = f"{cfg.result_dir}/post_training_temp"
-            os.makedirs(ply_dir, exist_ok=True)
-            ply_path = f"{ply_dir}/splats_step{step}_rank{self.world_rank}.ply"
-            save_ply(self.splats, ply_path)
-            print(f"Saved splats to {ply_path}")
-            
-            # Update input_spec to point to the newly saved PLY file
-            pt_cfg.input_spec = InputSpec(
-                input_type="ply",
-                path=Path(ply_path)
-            )
-        
-        # Create compression output directory
-        compress_dir = f"{cfg.result_dir}/post_training_compression/step{step}_rank{self.world_rank}"
-        
-        # Instantiate PostTrainingCompressor
-        compressor = PostTrainingCompressor(
-            config=pt_cfg,
-            output_dir=Path(compress_dir)
-        )
-        
-        # Run encoding
-        print("Encoding splats with PostTrainingCompressor...")
-        encode_result = compressor.encode()
-        print(f"Encode completed. Output: {encode_result.payload_dir}")
-        
-        # Run decoding
-        print("Decoding splats...")
-        decode_result = compressor.decode()
-        print(f"Decoded frame saved to: {decode_result.saved_path}")
-        
-        # Load decoded splats and update to self.splats
-        splats_decoded = decode_result.frame
-        for k in splats_decoded.keys():
-            self.splats[k].data = splats_decoded[k].to(self.device)
-        
-        print("Updated runner splats with decoded results.")
-        
-        # Evaluate decoded results
-        self.eval(step=step, stage="post_training_compress")
-        self.render_traj(step=step, stage="post_training_compress")
-        
-        print("Post-training compression completed.")
-
-    @torch.no_grad()
     def run_param_distribution_vis(self, param_dict: Dict[str, Tensor], save_dir: str):
         import matplotlib.pyplot as plt
         import matplotlib.ticker as ticker
@@ -1455,7 +1715,7 @@ class Runner:
         self
     ):
         """Save parameters of Gaussian Splats into .ply file"""
-        ply_dir = f"{self.cfg.result_dir}/ply"
+        ply_dir = f"{cfg.result_dir}/ply"
         os.makedirs(ply_dir, exist_ok=True)
         ply_file = ply_dir + "/splats.ply"
         save_ply(self.splats, ply_file)
@@ -1470,12 +1730,8 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
 
     runner = Runner(local_rank, world_rank, world_size, cfg)
 
-    if cfg.mode == "train":
-        runner.train()
-    elif cfg.mode == "compress":
-        if cfg.ckpt is None:
-            raise ValueError("ckpt parameter is required for compress mode")
-        # Load checkpoints
+    if cfg.ckpt is not None:
+        # run eval only
         ckpts = [
             torch.load(file, map_location=runner.device, weights_only=True)
             for file in cfg.ckpt
@@ -1483,15 +1739,15 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
         for k in runner.splats.keys():
             runner.splats[k].data = torch.cat([ckpt["splats"][k] for ckpt in ckpts])
         step = ckpts[0]["step"]
-        # save ply
         runner.save_params_into_ply_file()
-        # eval and render traj. of uncompressed splats
-        # runner.eval(step=step)
-        # runner.render_traj(step=step)
-
-        runner.run_post_training_compression(step=step)
+        runner.eval(step=step)
+        runner.render_traj(step=step)
+        if cfg.compression is not None:
+            if cfg.compression == "entropy_coding":
+                runner.load_entropy_model_from_ckpt(ckpts[0], cfg.entropy_model_type)
+            runner.run_compression(step=step)
     else:
-        raise ValueError(f"Unknown mode: {cfg.mode}")
+        runner.train()
 
     if not cfg.disable_viewer:
         print("Viewer running... Ctrl+C to exit.")
@@ -1503,12 +1759,8 @@ if __name__ == "__main__":
     Usage:
 
     ```bash
-    # Training mode (default)
+    # Single GPU training
     CUDA_VISIBLE_DEVICES=0 python simple_trainer.py default
-    CUDA_VISIBLE_DEVICES=0 python simple_trainer.py default --mode train
-
-    # Compression mode (requires checkpoint and post-training compression config)
-    CUDA_VISIBLE_DEVICES=0 python simple_trainer.py default --mode compress --ckpt results/garden/ckpts/ckpt_30000_rank0.pt
 
     # Distributed training on 4 GPUs: Effectively 4x batch size so run 4x less steps.
     CUDA_VISIBLE_DEVICES=0,1,2,3 python simple_trainer.py default --steps_scaler 0.25
@@ -1535,44 +1787,36 @@ if __name__ == "__main__":
             ),
         ),
     }
-    config_file_arg = pop_flag_value(CONFIG_FILE_FLAGS)
-    save_config_arg = pop_flag_value(CONFIG_SAVE_FLAGS)
+    config_file_arg = _pop_flag_value(CONFIG_FILE_FLAGS)
+    save_config_arg = _pop_flag_value(CONFIG_SAVE_FLAGS)
 
     external_updates = None
     if config_file_arg is not None:
-        external_updates = load_config_updates(Path(config_file_arg))
-    prepared_configs = prepare_presets(
-        configs,
-        external_updates,
-        registry_handlers=_REGISTRY_HANDLERS,
-    )
+        external_updates = _load_config_updates(Path(config_file_arg))
+    prepared_configs = _prepare_presets(configs, external_updates)
 
     cfg = tyro.extras.overridable_config_cli(prepared_configs)
-    # synchronize_compression_config(cfg)  # Removed since CompressionConfig is no longer used
+    _synchronize_compression_config(cfg)
     cfg.adjust_steps(cfg.steps_scaler)
 
     snapshot_path = (
         Path(save_config_arg)
         if save_config_arg is not None
-        else Path(cfg.result_dir) / "cfg_snapshot" / DEFAULT_CONFIG_SNAPSHOT
+        else Path(cfg.result_dir) / DEFAULT_CONFIG_SNAPSHOT
     )
-    save_config_snapshot(
-        cfg,
-        snapshot_path,
-        custom_serializers=_CONFIG_SERIALIZERS,
-    )
+    save_config_snapshot(cfg, snapshot_path)
     print(f"[config] snapshot saved to {snapshot_path}")
 
     # try import extra dependencies
-    # if cfg.compression == "png":
-    #     try:
-    #         import plas
-    #         import torchpq
-    #     except:
-    #         raise ImportError(
-    #             "To use PNG compression, you need to install "
-    #             "torchpq (instruction at https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) "
-    #             "and plas (via 'pip install git+https://github.com/fraunhoferhhi/PLAS.git') "
-    #         )
+    if cfg.compression == "png":
+        try:
+            import plas
+            import torchpq
+        except:
+            raise ImportError(
+                "To use PNG compression, you need to install "
+                "torchpq (instruction at https://github.com/DeMoriarty/TorchPQ?tab=readme-ov-file#install) "
+                "and plas (via 'pip install git+https://github.com/fraunhoferhhi/PLAS.git') "
+            )
 
     cli(main, cfg, verbose=True)

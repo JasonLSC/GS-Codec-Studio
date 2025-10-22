@@ -1,6 +1,8 @@
 import json
 import math
 import os
+import dataclasses
+import re
 from matplotlib.style import use
 import torch
 import torch.nn.functional as F
@@ -9,9 +11,10 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from collections import defaultdict
-from typing import Dict, List, Literal, Optional, Tuple, Union, ContextManager
+from typing import Dict, List, Literal, Optional, Tuple, Union, ContextManager, Annotated
 import yaml
 import tyro
+from tyro.conf import Suppress
 import tqdm
 import imageio
 import matplotlib.pyplot as plt
@@ -112,6 +115,13 @@ class Config:
     sparse_grad: bool = False
     antialiased: bool = False
     duration: int = 50 # 20 # number of frames to train
+    total_frames: Optional[int] = None
+    data_start_frame: Optional[int] = None
+    gof_size: Annotated[int, Suppress()] = 0
+    group_index: Annotated[int, Suppress()] = 0
+    group_count: Annotated[int, Suppress()] = 1
+    group_start_frame: Annotated[int, Suppress()] = 0
+    group_frames: Annotated[int, Suppress()] = 0
     ssim_lambda: float = 0.2 # Weight for SSIM loss
     save_steps: List[int] = field(default_factory=lambda: [i for i in range(9_000, 75_001, 3_000)]) # Steps to save the model
     eval_steps: List[int] = field(default_factory=lambda: [i for i in range(0, 75_001, 3_000)]) # Steps to evaluate the model # 7_000, 30_000
@@ -1233,9 +1243,31 @@ class Runner:
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
-def main(cfg: Config):
+
+def _extract_colmap_start_frame(data_dir: str) -> int:
+    match = re.search(r"colmap_(\d+)", data_dir)
+    if match:
+        return int(match.group(1))
+    return 0
+
+
+def _resolve_colmap_dir(base_path: str, start_frame: int) -> str:
+    match = re.search(r"(colmap_)(\d+)", base_path)
+    if match:
+        return f"{base_path[:match.start(2)]}{start_frame}{base_path[match.end(2):]}"
+    return os.path.join(base_path.rstrip("/"), f"colmap_{start_frame}")
+
+
+def _compose_group_path(base_path: str, gof_tag: str, group_tag: str) -> str:
+    base_norm = base_path.rstrip("/")
+    if not base_norm:
+        return os.path.join(".", gof_tag, group_tag)
+    return os.path.join(base_norm, gof_tag, group_tag)
+
+
+def _run_single_group(cfg: Config) -> None:
     runner = Runner(cfg)
-    
+
     if cfg.ckpt is not None:
         ckpts = [
             torch.load(file, map_location=runner.device, weights_only=True)
@@ -1246,14 +1278,78 @@ def main(cfg: Config):
         runner.decoder.load_state_dict(ckpts[0]["decoder"])
         step = ckpts[0]["step"]
         print(f"Evaluate ckpt saved at step {step}")
-        # runner.render_traj(step=step)
         runner.eval(step=step)
         if cfg.compression is not None:
             print(f"Compress ckpt saved at step {step}")
             runner.run_compression(step=step)
-
     else:
         runner.train()
+
+
+def main(cfg: Config):
+    if cfg.ckpt is not None:
+        _run_single_group(cfg)
+        return
+
+    if cfg.duration <= 0:
+        raise ValueError("duration must be a positive integer")
+
+    total_frames = cfg.total_frames if cfg.total_frames is not None else 300
+    if total_frames <= 0:
+        raise ValueError("total_frames must be a positive integer")
+
+    gof = cfg.duration
+    base_result_dir = cfg.result_dir
+    if not base_result_dir:
+        raise ValueError("result_dir must be provided for GOF training")
+
+    base_model_root = cfg.model_path if cfg.model_path else base_result_dir
+    base_data_dir = cfg.data_dir
+    if not base_data_dir:
+        raise ValueError("data_dir must be provided for GOF training")
+
+    base_start_frame = (
+        cfg.data_start_frame
+        if cfg.data_start_frame is not None
+        else _extract_colmap_start_frame(base_data_dir)
+    )
+
+    group_count = math.ceil(total_frames / gof)
+    gof_tag = f"gof_{gof:03d}"
+
+    for group_idx in range(group_count):
+        rel_start = group_idx * gof
+        frames = min(gof, total_frames - rel_start)
+        if frames <= 0:
+            continue
+
+        actual_start = base_start_frame + rel_start
+        data_dir = _resolve_colmap_dir(base_data_dir, actual_start)
+
+        group_tag = f"group_{group_idx:03d}"
+        group_result_dir = _compose_group_path(base_result_dir, gof_tag, group_tag)
+        group_model_path = _compose_group_path(base_model_root, gof_tag, group_tag)
+
+        group_cfg = dataclasses.replace(
+            cfg,
+            duration=frames,
+            data_dir=data_dir,
+            model_path=group_model_path,
+            result_dir=group_result_dir,
+            total_frames=total_frames,
+            data_start_frame=base_start_frame,
+            gof_size=gof,
+            group_index=group_idx,
+            group_count=group_count,
+            group_start_frame=actual_start,
+            group_frames=frames,
+        )
+
+        print(
+            f"[GOF] group {group_idx + 1}/{group_count}: start={actual_start}, frames={frames}, data_dir={data_dir}"
+        )
+
+        _run_single_group(group_cfg)
 
 if __name__ == "__main__":
     # Config objects we can choose between.

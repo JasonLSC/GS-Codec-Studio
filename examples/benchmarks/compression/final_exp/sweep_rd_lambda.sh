@@ -1,6 +1,6 @@
 #!/bin/bash
 
-RD_LAMBDA_LIST="0.002 0.004 0.0075 0.006 0.008"
+RD_LAMBDA_LIST="0.002 0.004 0.0075 0.006 0.008 0.01"
 
 # 定义TT执行函数
 run_tt() {
@@ -66,7 +66,6 @@ tt_pid=$!
 # run_db &
 # db_pid=$!
 
-# # 等待所有进程完成
 wait $tt_pid
 tt_status=$?
 # wait $mip_pid
@@ -74,7 +73,6 @@ tt_status=$?
 # wait $db_pid
 # db_status=$?
 
-# # 检查是否所有进程都成功完成
 if [ $tt_status -ne 0 ] || [ $mip_status -ne 0 ] || [ $db_status -ne 0 ]; then
     echo "One or more processes failed"
     exit 1
