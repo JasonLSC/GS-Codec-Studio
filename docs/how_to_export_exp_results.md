@@ -3,7 +3,7 @@
 In this document, we cover: 1) how to obtain aggregated experiment data, and 2) how to create RD curves/tables.
 
 ## Experiment Data Aggregation
-Assuming you have successfully run our experiment scripts (e.g., [train_multi_ratepoint.sh](examples/scripts/static_exps/tt/train_multi_ratepoint.sh)) and completed the experiments, you will obtain an experiment directory containing multiple bitrates/scenes (e.g., results/tt_mcmc_comp_sim). Next, you can use the aggregation script [summarize_rd_from_exps.py](tools/summarize_rd_from_exps.py) to consolidate the experiments in that directory and export a JSON file with detailed experiment data.
+Assuming you have successfully run our experiment scripts (e.g., [train_multi_ratepoint.sh](../examples/scripts/static_exps/tt/train_multi_ratepoint.sh)) and completed the experiments, you will obtain an experiment directory containing multiple bitrates/scenes (e.g., results/tt_mcmc_comp_sim). Next, you can use the aggregation script [summarize_rd_from_exps.py](../tools/summarize_rd_from_exps.py) to consolidate the experiments in that directory and export a JSON file with detailed experiment data.
 
 You need to provide two key arguments: 1) the experiment directory path and 2) the aggregated data file (JSON file). Example usage is shown below:
 
@@ -48,7 +48,7 @@ The aggregated JSON file has the following structure:
 
 ## RD Curve/Table Generation
 
-In general, we plot the RD curves/tables based on the aggregated data of each baseline (for example, [static_rd.json](open_stats/static_rd.json)).
+In general, we plot the RD curves/tables based on the aggregated data of each baseline (for example, [static_rd.json](../open_stats/static_rd.json)).
 
 We also support merging the newly aggregated experiment data into the existing statistics file so that the performance of the new experiment can be visualized in the RD curve/table.
 
