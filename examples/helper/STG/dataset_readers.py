@@ -124,10 +124,6 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, near, far, 
         sys.stdout.flush()
 
         extr = cam_extrinsics[key]
-
-
-
-
         intr = cam_intrinsics[extr.camera_id]
         height = intr.height
         width = intr.width
@@ -146,8 +142,6 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, near, far, 
             FovX = focal2fov(focal_length_x, width)
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
-
-
 
        # loop for timestamps/frames
         for j in range(startime, startime+ int(duration)):
@@ -757,6 +751,7 @@ def readColmapSceneInfoMv(path, images, eval, llffhold=8, multiview=False, durat
 
 
 def readColmapSceneInfo(path, images, eval, llffhold=8, multiview=False, duration=50, test_view_id=[0], downscale_factor=1):
+    # get camera extrinsic & intrinsic
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -787,12 +782,14 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, multiview=False, duratio
             train_cam_infos =  cam_infos[duration:] # Camera 1~20 train set
             test_cam_infos = cam_infos[:duration] # Camera 0 test set
 
+            # make sure only have one test view 
             uniquecheck = []
             for cam_info in test_cam_infos:
                 if cam_info.image_name not in uniquecheck:
                     uniquecheck.append(cam_info.image_name)
             assert len(uniquecheck) == 1 
             
+            # make sure test view is not in the set of train view 
             sanitycheck = []
             for cam_info in train_cam_infos:
                 if cam_info.image_name not in sanitycheck:
@@ -829,12 +826,9 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, multiview=False, duratio
     nerf_normalization = getNerfppNorm(train_cam_infos)
     nerf_normalization_test = getNerfppNorm(test_cam_infos)
     
-    ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bin_path = os.path.join(path, "sparse/0/points3D.bin")
-    txt_path = os.path.join(path, "sparse/0/points3D.txt")
     totalply_path = os.path.join(path, "sparse/0/points3D_total" + str(duration) + ".ply")
     
-
+    ### operation from STG
     # merge SfM point clouds from consecutive frames into a single .ply file
     # pc from different frames have corresponding time index
     # these points will be used for initialization
@@ -849,7 +843,9 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, multiview=False, duratio
             xyz, rgb, _ = read_points3D_binary(thisbin_path)
             totalxyz.append(xyz)
             totalrgb.append(rgb)
-            totaltime.append(np.ones((xyz.shape[0], 1)) * (i-starttime) / duration)
+            # totaltime.append(np.ones((xyz.shape[0], 1)) * (i-starttime) / duration) # old version: norm timestamp into [0,1]
+            totaltime.append(np.ones((xyz.shape[0], 1)) * (i-starttime) / 30) # new version:change the unit from index into seconds, assume framerate as 30 frames per second
+
         xyz = np.concatenate(totalxyz, axis=0)
         rgb = np.concatenate(totalrgb, axis=0)
         totaltime = np.concatenate(totaltime, axis=0)
@@ -857,6 +853,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, multiview=False, duratio
         xyzt =np.concatenate( (xyz, totaltime), axis=1)     
         storePly(totalply_path, xyzt, rgb)
     try:
+        print(f"Read merged point cloud file directly from: {totalply_path}")
         pcd = fetchPly(totalply_path)
     except:
         pcd = None

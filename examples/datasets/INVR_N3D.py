@@ -24,7 +24,7 @@ except:
     from examples.helper.STG.time_utils import timer, timeblock
 
 # reference to STG's scene __init__.py
-@timer
+# @timer
 class Parser:
     """COLMAP parser."""
 
@@ -56,14 +56,15 @@ class Parser:
         raydict = {}
         
         # Get scene info
-        if loader == "colmap": # colmapvalid only for testing
+        ## Get cam parameters & merged point cloud for splats initialization
+        if loader == "colmap": 
             scene_info = sceneLoadTypeCallbacks["Colmap"](self.source_path, self.images_phrase, self.eval, multiview, duration=self.duration, test_view_id=self.test_view_id, downscale_factor=downscale_factor) # SceneInfo() - NamedTuple
         # elif loader == "invr":
         #     scene_info = sceneLoadTypeCallbacks["INVR"](self.source_path, self.images_phrase, self.eval, multiview, duration=self.duration) # SceneInfo() - NamedTuple
         else:
             assert False, "Could not recognize scene type!"
 
-        with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+        with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "init_pcd.ply") , 'wb') as dest_file:
             dest_file.write(src_file.read())
         
         self.cameras_extent = scene_info.nerf_normalization["radius"]
@@ -187,7 +188,8 @@ class Dataset(torch.utils.data.Dataset):
             images.append(PILtoTorch_new(self.fetch_image(finfo.image_path), resolution).permute(1,2,0))
             image_paths.append(finfo.image_path)
             camtoworlds.append(torch.from_numpy(self.camtoworld[globalid]))
-            timesteps.append(tid/len(self.scene_by_t))
+            # timesteps.append(tid/len(self.scene_by_t)) # old version: norm to [0,1]
+            timesteps.append(tid/30) # default framerate is 30 
             Ks.append(torch.from_numpy(self.parser.K))
             rays.append(cami.rays[0])
 

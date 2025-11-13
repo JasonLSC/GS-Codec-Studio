@@ -1,0 +1,121 @@
+{
+    "STG": {
+      "default": {
+        "quality_metrics": { "PSNR": 32.05, "SSIM": 0.946, "LPIPS": 0.044 },
+        "render_speed": { "FPS": 140 },
+        "memory_metrics": { "storage(MB)": 200, "bitrate(Mb/s)": 160.0 },
+        "num_gaussians": null
+      }
+    },
+    "MEGA": {
+      "default": {
+        "quality_metrics": { "PSNR": 31.49, "SSIM": 0.939, "LPIPS": 0.057 },
+        "render_speed": { "FPS": 77 },
+        "memory_metrics": { "storage(MB)": 25.05, "bitrate(Mb/s)": 20.04 },
+        "num_gaussians": null
+      }
+    },
+    "CSTG": {
+      "Ours+PP": {
+        "quality_metrics": { "PSNR": 31.69, "SSIM": 0.945, "LPIPS": 0.054 },
+        "render_speed": { "FPS": 186 },
+        "memory_metrics": { "storage(MB)": 15.4, "bitrate(Mb/s)": 12.32 },
+        "num_gaussians": null
+      }
+    },
+    "QUEEN":{
+      "L": {
+        "quality_metrics": { "PSNR": 32.19, "SSIM": 0.946, "LPIPS": 0.136 },
+        "render_speed": { "FPS": 248 },
+        "memory_metrics": { "storage(MB)": 225, "bitrate(Mb/s)": 180.0 },
+        "num_gaussians": null
+      },
+      "M": {
+        "quality_metrics": { "PSNR": 32.03, "SSIM": 0.946, "LPIPS": 0.137 },
+        "render_speed": { "FPS": 321 },
+        "memory_metrics": { "storage(MB)": 207, "bitrate(Mb/s)": 165.6 },
+        "num_gaussians": null
+      },
+      "S": {
+        "quality_metrics": { "PSNR": 31.89, "SSIM": 0.945, "LPIPS": 0.139 },
+        "render_speed": { "FPS": 345 },
+        "memory_metrics": { "storage(MB)": 204, "bitrate(Mb/s)": 163.2 },
+        "num_gaussians": null
+      }
+    },
+    "4DGC":{
+      "default": {
+        "quality_metrics": { "PSNR": 31.58, "SSIM": 0.943, "LPIPS": 0.139 },
+        "render_speed": { "FPS": 168 },
+        "memory_metrics": { "storage(MB)": 150, "bitrate(Mb/s)": 120.0 },
+        "num_gaussians": null
+      }
+    },
+    "GIFStream": {
+      "GOF50-r0": {
+        "quality_metrics": { "PSNR": 31.34, "SSIM": 0.940, "LPIPS": 0.053 },
+        "render_speed": { "FPS": 100 },
+        "memory_metrics": { "storage(MB)": 10.06, "bitrate(Mb/s)": 8.05 },
+        "num_gaussians": null
+      },
+      "GOF50-r1": {
+        "quality_metrics": { "PSNR": 31.16, "SSIM": 0.939, "LPIPS": 0.056 },
+        "render_speed": { "FPS": 100 },
+        "memory_metrics": { "storage(MB)": 8.52, "bitrate(Mb/s)": 6.82 },
+        "num_gaussians": null
+      },
+      "GOF50-r2": {
+        "quality_metrics": { "PSNR": 30.96, "SSIM": 0.935, "LPIPS": 0.063 },
+        "render_speed": { "FPS": 100 },
+        "memory_metrics": { "storage(MB)": 7.23, "bitrate(Mb/s)": 5.78 },
+        "num_gaussians": null
+      },
+      "GOF50-r3": {
+        "quality_metrics": { "PSNR": 30.73, "SSIM": 0.931, "LPIPS": 0.072 },
+        "render_speed": { "FPS": 100 },
+        "memory_metrics": { "storage(MB)": 6.15, "bitrate(Mb/s)": 4.92 },
+        "num_gaussians": null
+      }
+    },
+    "Ours(GOF=50)": {
+      "L": {
+        "quality_metrics": { "PSNR": 32.17, "SSIM": 0.951, "LPIPS": 0.138 },
+        "render_speed": { "FPS": null },
+        "memory_metrics": { "storage(MB)": 16.88, "bitrate(Mb/s)": 13.50 },
+        "num_gaussians": null
+      },
+      "M": {
+        "quality_metrics": { "PSNR": 31.98, "SSIM": 0.949, "LPIPS": 0.145 },
+        "render_speed": { "FPS": 258 },
+        "memory_metrics": { "storage(MB)": 15.19, "bitrate(Mb/s)": 12.15 },
+        "num_gaussians": null
+      },
+      "S": {
+        "quality_metrics": { "PSNR": 31.78, "SSIM": 0.946, "LPIPS": 0.152 },
+        "render_speed": { "FPS": null },
+        "memory_metrics": { "storage(MB)": 13.42, "bitrate(Mb/s)": 10.74 },
+        "num_gaussians": null
+      }
+    },
+    "Ours(GOF=300)": {
+      "L": {
+        "quality_metrics": { "PSNR": 31.86, "SSIM": 0.949, "LPIPS": 0.139 },
+        "render_speed": { "FPS": null },
+        "memory_metrics": { "storage(MB)": 6.33, "bitrate(Mb/s)": 5.06},
+        "num_gaussians": null
+      },
+      "M": {
+        "quality_metrics": { "PSNR": 31.62, "SSIM": 0.946, "LPIPS": 0.148 },
+        "render_speed": { "FPS": 258 },
+        "memory_metrics": { "storage(MB)": 5.61, "bitrate(Mb/s)": 4.49 },
+        "num_gaussians": null
+      },
+      "S": {
+        "quality_metrics": { "PSNR": 31.38, "SSIM": 0.943, "LPIPS": 0.157 },
+        "render_speed": { "FPS": 258 },
+        "memory_metrics": { "storage(MB)": 4.91, "bitrate(Mb/s)": 3.92 },
+        "num_gaussians": null
+      }
+    }
+  }
+  

@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import time
+import viser
+import nerfview
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -82,10 +84,20 @@ class ProfilerConfig:
 
 @dataclass
 class Config:
+    # Viewer
+    disable_viewer: bool = False
+    port: int = 8080
+
+    # Compression Only
+    compression_only: bool = False
+
+    # GOF
+    start_frame_index: int = 0
+    end_frame_index: int = 299
+    gof_num: int = 50
+
     # Model Params / lp
     sh_degree: int = 3
-    source_path: str = ""
-    model_path: str = ""
     images: str = "images"
     downscale_factor: int = 2 #-1
     white_background: bool = False
@@ -117,11 +129,6 @@ class Config:
     duration: int = 50 # 20 # number of frames to train
     total_frames: Optional[int] = None
     data_start_frame: Optional[int] = None
-    gof_size: Annotated[int, Suppress()] = 0
-    group_index: Annotated[int, Suppress()] = 0
-    group_count: Annotated[int, Suppress()] = 1
-    group_start_frame: Annotated[int, Suppress()] = 0
-    group_frames: Annotated[int, Suppress()] = 0
     ssim_lambda: float = 0.2 # Weight for SSIM loss
     save_steps: List[int] = field(default_factory=lambda: [i for i in range(9_000, 75_001, 3_000)]) # Steps to save the model
     eval_steps: List[int] = field(default_factory=lambda: [i for i in range(0, 75_001, 3_000)]) # Steps to evaluate the model # 7_000, 30_000
@@ -141,13 +148,10 @@ class Config:
     model_path: str = "" # dir of output model
     data_dir: str = "" # modified to fit STG style data loader
     result_dir: str = "" # Directory to save results
-    ckpt: Optional[List[str]] = None # Serve as checkpoint, Same as "start_checkpoint" in STG
+    ckpt_name: Optional[str] = None # Name of checkpoint to load, default: None
     lpips_net: str = "alex" # "alex" or "vgg"
 
     # densification strategy
-    # strategy: Union[STG_Strategy] = field(
-    #     default_factory=DefaultStrategy
-    # )
     strategy: Literal["STG_Strategy", "Modified_STG_Strategy"] = "STG_Strategy"
 
     # Temporal visibility masking
@@ -231,10 +235,14 @@ def create_splats_with_optimizers(
     quats[:, 0] = 1
     # opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
     opacities = inverse_sigmoid(0.1 * torch.ones(N,))
-    trbf_scale = torch.log(torch.ones((N, 1))) # [N, 1]
-    times = parser.timestamp 
-    times = torch.tensor(times)
-    trbf_center = times.contiguous() # [N, 1]
+
+    # Time-dependent parameters
+    trbf_center = torch.tensor(parser.timestamp).contiguous()  # [N, 1]
+    lifespan_init = 1.0
+    t_opa_threshold = 0.05
+    t_scale_init = lifespan_init / 2 / math.sqrt(-2 * math.log(t_opa_threshold))
+    trbf_scale = torch.log(torch.ones((N, 1)) * t_scale_init) # [N, 1]
+
     motion = torch.zeros((N, 9))
     omega = torch.zeros((N, 4))
     
@@ -292,7 +300,7 @@ def create_splats_with_optimizers(
 
 class Runner:
     """Engine for training and testing."""
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, gof: Tuple[int, int]) -> None:
         # only enable when debug!!
         if cfg.enable_autograd_detect_anomaly:
             torch.autograd.set_detect_anomaly(True)
@@ -301,31 +309,36 @@ class Runner:
         # Write cfg file: Skipped
         self.device = self.cfg.device
         
-        os.makedirs(cfg.model_path, exist_ok=True)
-         # Where to dump results.
-        os.makedirs(cfg.result_dir, exist_ok=True)
-
-        # Setup output directories.
-        self.ckpt_dir = f"{cfg.result_dir}/ckpts"
-        os.makedirs(self.ckpt_dir, exist_ok=True)
-        self.stats_dir = f"{cfg.result_dir}/stats"
-        os.makedirs(self.stats_dir, exist_ok=True)
-        self.render_dir = f"{cfg.result_dir}/renders"
-        os.makedirs(self.render_dir, exist_ok=True)
         
-        self.render_dir_difference = f"{cfg.result_dir}/renders/difference_map"
+
+         # Where to dump results.
+        self.result_dir = f"{cfg.result_dir}/Frame{gof[0]}-{gof[1]}"
+        os.makedirs(self.result_dir, exist_ok=True)
+        # Where to dump init. pcd model for splats initialization 
+        self.model_path = f"{cfg.model_path}/Frame{gof[0]}-{gof[1]}/init_pcd"
+        os.makedirs(self.model_path, exist_ok=True)
+        # Setup output directories.
+        self.ckpt_dir = f"{self.result_dir}/ckpts"
+        os.makedirs(self.ckpt_dir, exist_ok=True)
+        self.stats_dir = f"{self.result_dir}/stats"
+        os.makedirs(self.stats_dir, exist_ok=True)
+        self.render_dir = f"{self.result_dir}/renders"
+        os.makedirs(self.render_dir, exist_ok=True)
+        self.render_dir_difference = f"{self.result_dir}/renders/difference_map"
         os.makedirs(self.render_dir_difference, exist_ok=True)
         
         # Tensorboard
-        self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
-        
+        self.writer = SummaryWriter(log_dir=f"{self.result_dir}/tb")
+
         # Load data: Training data should contain initial points and colors.
-        parser = Parser(model_path=self.cfg.model_path, source_path=self.cfg.data_dir, duration=cfg.duration, 
+        ## Load cam & initial point cloud (merged), which may be a point to improve 
+        source_path = f"{self.cfg.data_dir}/colmap_{gof[0]}"
+        duration = gof[1] - gof[0] + 1
+        self.parser = Parser(model_path=self.model_path, source_path=source_path, duration=duration, 
                         shuffle=False, eval=self.cfg.eval, downscale_factor=cfg.downscale_factor, data_device='cpu', test_view_id=cfg.test_view_id)
-        self.parser = parser
+
         self.trainset = Dataset(parser=self.parser, split="train", num_views=cfg.batch_size, use_fake_length=True, fake_length=cfg.max_steps+100)
         self.testset = Dataset(parser=self.parser, split="test", num_views=len(cfg.test_view_id))
-
         self.trainloader = torch.utils.data.DataLoader(
             self.trainset,
             batch_size=1,
@@ -335,7 +348,6 @@ class Runner:
             pin_memory=True,
             # collate_fn=collate_fn
         )
-
         self.testloader = torch.utils.data.DataLoader(
             self.testset,
             batch_size=1,
@@ -458,6 +470,14 @@ class Runner:
         
         # Viewer
         # TODO Viewer should proceed here, according to GSplat
+        if not self.cfg.disable_viewer:
+
+            self.server = viser.ViserServer(port=cfg.port, verbose=False)
+            self.viewer = nerfview.Viewer(
+                server=self.server,
+                render_fn=self._viewer_render_fn,
+                mode="training",
+            )
 
     def get_profiler(self, tb_writer) -> ContextManager:
         if self.profiler_config.enabled:
@@ -521,7 +541,6 @@ class Runner:
             feature_time = self.comp_sim_splats["features_time"] # [N, 3]    
         
         pointtimes = torch.ones((means.shape[0],1), dtype=means.dtype, requires_grad=False, device="cuda") + 0 # 
-        timestamp = timestamp
         
         trbfdistanceoffset = timestamp * pointtimes - trbfcenter
         trbfdistance =  trbfdistanceoffset / (math.sqrt(2) * trbfscale)
@@ -601,53 +620,13 @@ class Runner:
         self.world_rank = world_rank
         # Dump cfg.
         if world_rank == 0:
-            with open(f"{cfg.result_dir}/cfg.yml", "w") as f:
+            with open(f"{self.result_dir}/cfg.yml", "w") as f:
                 yaml.dump(vars(cfg), f)
         
         max_steps = cfg.max_steps
         init_step = 0
         
         flag = 0
-        
-        ### used in gsplat, but no need for now in STG
-        # schedulers = [
-        #     # means has a learning rate schedule, that end at 0.01 of the initial value
-        #     torch.optim.lr_scheduler.ExponentialLR(
-        #         self.optimizers["means"], gamma=0.01 ** (1.0 / max_steps)
-        #     ),
-        # ]
-        
-        # organize data accoring to their timestamp, to ensure data in the same batch have the same timestamp
-        # TODO This part consumes too much time when duration is high
-        # import pdb; pdb.set_trace()
-        # print("organizing data accoring to their timestamp, this may take a while...")
-        # cam_num = int(len(self.trainset)/cfg.duration)
-        
-        # if True:
-        #     if cfg.batch_size > 1:
-        #         # traincameralist = self.trainset
-        #         traincamdict = {}
-        #         for timeindex in range(cfg.duration): 
-        #             traincamdict[timeindex] = itemgetter(*[timeindex+cfg.duration*i for i in range(cam_num)])(self.trainset)
-        #             # traincamdict[i] = []
-        #             # for j in range(len(self.trainset)):
-        #             #     if self.trainset[j]["timestamp"] == i/cfg.duration:
-        #             #         traincamdict[i].append(self.trainset[j])
-        #     else: 
-        #         # Do not support batch size = 1 for now
-        #         raise ValueError(f"Batch size = 1 is not supported: {cfg.batch_size}")
-        #     print("organizing data complete!")
-        
-        # DataLoader for batchsize=1
-        # trainloader = torch.utils.data.DataLoader(
-        #     self.trainset,
-        #     batch_size=cfg.batch_size,
-        #     shuffle=False, # True
-        #     num_workers=4,
-        #     persistent_workers=True,
-        #     pin_memory=True,
-        # )
-        # trainloader_iter = iter(trainloader)
         
         with self.get_profiler(self.writer) as prof:
             self.profiler = prof if self.profiler_config.enabled else None
@@ -662,12 +641,19 @@ class Runner:
                 if step > max_steps:
                     pbar.close()
                     break
+
+                if not self.cfg.disable_viewer:
+                    while self.viewer.state.status == "paused":
+                        time.sleep(0.01)
+                    self.viewer.lock.acquire()
+                    tic = time.time()
                 
                 # get batch data
                 pixels = batch["image"][0].to(device)
                 Ks, rays, camtoworld = batch["K"][0].to(device), batch["ray"][0].to(device), batch["camtoworld"][0].to(device)
                 timestamp = batch['timestamp'][0].to(device).to(torch.float32)
                 num_views, height, width, _ = pixels.shape
+                num_train_rays_per_step = num_views * height * width
 
                 # compression simulation
                 if cfg.compression_sim:
@@ -862,16 +848,60 @@ class Runner:
                 # TODO
                 
                 # Viewer Skipped
-                # TODO
+                if not cfg.disable_viewer:
+                    self.viewer.lock.release()
+                    num_train_steps_per_sec = 1.0 / (time.time() - tic)
+                    num_train_rays_per_sec = (
+                        num_train_rays_per_step * num_train_steps_per_sec
+                    )
+                    # Update the viewer state.
+                    self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+                    # Update the scene.
+                    self.viewer.update(step, num_train_rays_per_step)
 
                 # memory management
                 self.memory_manage(step)
     
     @torch.no_grad()
+    def _viewer_render_fn(
+        self, camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+    ):
+        """Callable function for the viewer."""
+        W, H = img_wh
+        c2w = camera_state.c2w
+        K = camera_state.get_K(img_wh)
+        c2w = torch.from_numpy(c2w).float().to(self.device)
+        K = torch.from_numpy(K).float().to(self.device)
+
+        # render_colors, _, _ = self.rasterize_splats(
+        #     camtoworlds=c2w[None],
+        #     Ks=K[None],
+        #     width=W,
+        #     height=H,
+        #     sh_degree=self.cfg.sh_degree,  # active all SH degrees
+        #     radius_clip=3.0,  # skip GSs that have small image radius (in pixels)
+        # )  # [1, H, W, 3]
+
+        renders, alphas, info = self.rasterize_splats(
+            timestamp=timestamp, # [C]
+            Ks=K[None],
+            width=W,
+            height=H,
+            basicfunction=trbfunction,
+            rays=rays, # [C, 6, H, W]
+            camtoworld=c2w[None], # [C, 4, 4]
+            temp_vis_mask=self.cfg.temp_vis_mask
+        )
+        return render_colors[0].cpu().numpy()
+    
+    @torch.no_grad()
     def memory_manage(self, step: int):
-        # delete intermeidate variables
-        del self.comp_sim_splats
-        del self.esti_bits_dict
+        try:
+            # delete intermeidate variables
+            del self.comp_sim_splats
+            del self.esti_bits_dict
+        except:
+            pass
         if step % 200 == 0:
             torch.cuda.empty_cache()
 
@@ -1120,7 +1150,7 @@ class Runner:
 
 
 
-        video_dir = f"{cfg.result_dir}/videos"
+        video_dir = f"{self.result_dir}/videos"
         os.makedirs(video_dir, exist_ok=True)
         writer = imageio.get_writer(f"{video_dir}/{stage}_traj_{step}.mp4", fps=30)
 
@@ -1185,22 +1215,22 @@ class Runner:
         print("Running compression...")
         world_rank = 0 # hard code for now
 
-        compress_dir = f"{cfg.result_dir}/compression/rank{world_rank}"
+        compress_dir = f"{self.result_dir}/compression/rank{world_rank}"
         os.makedirs(compress_dir, exist_ok=True)
         
         # visualize param. distribution
-        self.run_param_distribution_vis(self.splats, save_dir=f"{cfg.result_dir}/visualization/raw")
+        self.run_param_distribution_vis(self.splats, save_dir=f"{self.result_dir}/visualization/raw")
         
         self.compression_method.compress(compress_dir, self.splats)
         torch.save(self.decoder.state_dict(), os.path.join(compress_dir, 'decoder.pth'))
-        # self.run_param_distribution_vis(self.splats, save_dir=f"{cfg.result_dir}/visualization/log_transform")
+        # self.run_param_distribution_vis(self.splats, save_dir=f"{self.result_dir}/visualization/log_transform")
 
         # evaluate compression
         splats_c = self.compression_method.decompress(compress_dir)
         decoder_state_dict = torch.load(os.path.join(compress_dir, 'decoder.pth'))
         
         # visualize param. distribution
-        self.run_param_distribution_vis(splats_c, save_dir=f"{cfg.result_dir}/visualization/quant")
+        self.run_param_distribution_vis(splats_c, save_dir=f"{self.result_dir}/visualization/quant")
 
         for k in splats_c.keys():
             self.splats[k].data = splats_c[k].to(self.device)
@@ -1243,113 +1273,65 @@ class Runner:
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
+def split_gof(start_frame_id: int, end_frame_id: int, gof: int) -> List[Tuple[int, int]]:
+    """Split [start_frame_id, end_frame_id] into GOF-sized groups.
+    Returns a list of (start, end) inclusive pairs.
+    """
+    if gof <= 0:
+        raise ValueError("gof must be positive")
+    if end_frame_id < start_frame_id:
+        return []
 
-def _extract_colmap_start_frame(data_dir: str) -> int:
-    match = re.search(r"colmap_(\d+)", data_dir)
-    if match:
-        return int(match.group(1))
-    return 0
-
-
-def _resolve_colmap_dir(base_path: str, start_frame: int) -> str:
-    match = re.search(r"(colmap_)(\d+)", base_path)
-    if match:
-        return f"{base_path[:match.start(2)]}{start_frame}{base_path[match.end(2):]}"
-    return os.path.join(base_path.rstrip("/"), f"colmap_{start_frame}")
-
-
-def _compose_group_path(base_path: str, gof_tag: str, group_tag: str) -> str:
-    base_norm = base_path.rstrip("/")
-    if not base_norm:
-        return os.path.join(".", gof_tag, group_tag)
-    return os.path.join(base_norm, gof_tag, group_tag)
-
-
-def _run_single_group(cfg: Config) -> None:
-    runner = Runner(cfg)
-
-    if cfg.ckpt is not None:
-        ckpts = [
-            torch.load(file, map_location=runner.device, weights_only=True)
-            for file in cfg.ckpt
-        ]
-        for k in runner.splats.keys():
-            runner.splats[k].data = torch.cat([ckpt["splats"][k] for ckpt in ckpts])
-        runner.decoder.load_state_dict(ckpts[0]["decoder"])
-        step = ckpts[0]["step"]
-        print(f"Evaluate ckpt saved at step {step}")
-        runner.eval(step=step)
-        if cfg.compression is not None:
-            print(f"Compress ckpt saved at step {step}")
-            runner.run_compression(step=step)
-    else:
-        runner.train()
-
+    res = []
+    total = end_frame_id - start_frame_id + 1
+    groups = (total + gof - 1) // gof  # ceil division
+    for k in range(groups):
+        s = start_frame_id + k * gof
+        e = min(s + gof - 1, end_frame_id)
+        res.append((s, e))
+    return res
 
 def main(cfg: Config):
-    if cfg.ckpt is not None:
-        _run_single_group(cfg)
-        return
+    # split into multiple GOF
+    gof_list = split_gof(cfg.start_frame_index, cfg.end_frame_index, cfg.gof_num)
 
-    if cfg.duration <= 0:
-        raise ValueError("duration must be a positive integer")
+    for gof in gof_list:
+        runner = Runner(cfg, gof)
+        if not cfg.compression_only:
+            runner.train()
+        elif cfg.ckpt_name is not None:
+            ckpt_path = os.path.join(runner.result_dir, f"ckpts/{cfg.ckpt_name}")
+            ckpt = torch.load(ckpt_path, map_location=runner.device, weights_only=True)
+            for k in runner.splats.keys():
+                runner.splats[k].data = ckpt["splats"][k]
+            runner.decoder.load_state_dict(ckpt["decoder"])
+            step = ckpt["step"]
+            print(f"Evaluate ckpt saved at step {step}, which is the step with best eval results in training")
+            runner.eval(step=step)
+            if cfg.compression is not None:
+                print(f"Compress ckpt saved at step {step}, which is the step with best eval results in training")
+                runner.run_compression(step=step)
 
-    total_frames = cfg.total_frames if cfg.total_frames is not None else 300
-    if total_frames <= 0:
-        raise ValueError("total_frames must be a positive integer")
+        else:
+            raise ValueError("Compression only mode is not supported when ckpt_name is not provided")
 
-    gof = cfg.duration
-    base_result_dir = cfg.result_dir
-    if not base_result_dir:
-        raise ValueError("result_dir must be provided for GOF training")
 
-    base_model_root = cfg.model_path if cfg.model_path else base_result_dir
-    base_data_dir = cfg.data_dir
-    if not base_data_dir:
-        raise ValueError("data_dir must be provided for GOF training")
-
-    base_start_frame = (
-        cfg.data_start_frame
-        if cfg.data_start_frame is not None
-        else _extract_colmap_start_frame(base_data_dir)
-    )
-
-    group_count = math.ceil(total_frames / gof)
-    gof_tag = f"gof_{gof:03d}"
-
-    for group_idx in range(group_count):
-        rel_start = group_idx * gof
-        frames = min(gof, total_frames - rel_start)
-        if frames <= 0:
-            continue
-
-        actual_start = base_start_frame + rel_start
-        data_dir = _resolve_colmap_dir(base_data_dir, actual_start)
-
-        group_tag = f"group_{group_idx:03d}"
-        group_result_dir = _compose_group_path(base_result_dir, gof_tag, group_tag)
-        group_model_path = _compose_group_path(base_model_root, gof_tag, group_tag)
-
-        group_cfg = dataclasses.replace(
-            cfg,
-            duration=frames,
-            data_dir=data_dir,
-            model_path=group_model_path,
-            result_dir=group_result_dir,
-            total_frames=total_frames,
-            data_start_frame=base_start_frame,
-            gof_size=gof,
-            group_index=group_idx,
-            group_count=group_count,
-            group_start_frame=actual_start,
-            group_frames=frames,
-        )
-
-        print(
-            f"[GOF] group {group_idx + 1}/{group_count}: start={actual_start}, frames={frames}, data_dir={data_dir}"
-        )
-
-        _run_single_group(group_cfg)
+    # if cfg.ckpt is not None:
+    #     ckpts = [
+    #         torch.load(file, map_location=runner.device, weights_only=True)
+    #         for file in cfg.ckpt
+    #     ]
+    #     for k in runner.splats.keys():
+    #         runner.splats[k].data = torch.cat([ckpt["splats"][k] for ckpt in ckpts])
+    #     runner.decoder.load_state_dict(ckpts[0]["decoder"])
+    #     step = ckpts[0]["step"]
+    #     print(f"Evaluate ckpt saved at step {step}")
+    #     runner.eval(step=step)
+    #     if cfg.compression is not None:
+    #         print(f"Compress ckpt saved at step {step}")
+    #         runner.run_compression(step=step)
+    # else:
+    #     runner.train()
 
 if __name__ == "__main__":
     # Config objects we can choose between.
@@ -1365,6 +1347,7 @@ if __name__ == "__main__":
             Config(
                 compression_sim = True,
                 quantization_sim_type = "round",
+                entropy_model_opt = True,
                 # Placeholders for entropy constraint and ada mask
             ),
         ),
